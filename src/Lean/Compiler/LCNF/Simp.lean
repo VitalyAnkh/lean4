@@ -3,6 +3,7 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Compiler.LCNF.ReduceJpArity
 import Lean.Compiler.LCNF.Renaming
 import Lean.Compiler.LCNF.Simp.Basic
@@ -21,19 +22,20 @@ namespace Lean.Compiler.LCNF
 open Simp
 
 def Decl.simp? (decl : Decl) : SimpM (Option Decl) := do
-  updateFunDeclInfo decl.value
+  let .code code := decl.value | return none
+  updateFunDeclInfo code
   traceM `Compiler.simp.inline.info do return m!"{decl.name}:{Format.nest 2 (← (← get).funDeclInfoMap.format)}"
   traceM `Compiler.simp.step do ppDecl decl
-  let value ← simp decl.value
+  let code ← simp code
   let s ← get
-  let value ← value.applyRenaming s.binderRenaming
-  traceM `Compiler.simp.step.new do return m!"{decl.name} :=\n{← ppCode value}"
-  trace[Compiler.simp.stat] "{decl.name}, size: {value.size}, # visited: {s.visited}, # inline: {s.inline}, # inline local: {s.inlineLocal}"
-  if let some value ← simpJpCases? value then
-    let decl := { decl with value }
+  let code ← code.applyRenaming s.binderRenaming
+  traceM `Compiler.simp.step.new do return m!"{decl.name} :=\n{← ppCode code}"
+  trace[Compiler.simp.stat] "{decl.name}, size: {code.size}, # visited: {s.visited}, # inline: {s.inline}, # inline local: {s.inlineLocal}"
+  if let some code ← simpJpCases? code then
+    let decl := { decl with value := .code code }
     decl.reduceJpArity
   else if (← get).simplified then
-    return some { decl with value }
+    return some { decl with value := .code code }
   else
     return none
 

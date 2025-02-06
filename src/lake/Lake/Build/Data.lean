@@ -3,6 +3,7 @@ Copyright (c) 2022 Mac Malone. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Mac Malone
 -/
+prelude
 import Lake.Build.Key
 import Lake.Util.Family
 
@@ -83,10 +84,11 @@ abbrev BuildData : BuildKey → Type
 | .targetFacet _ _ f => TargetData f
 | .customTarget p t => CustomData (p, t)
 
+instance (priority := low) : FamilyDef BuildData k (BuildData k) := ⟨rfl⟩
 instance (priority := low) : FamilyDef BuildData (.moduleFacet m f) (ModuleData f) := ⟨rfl⟩
 instance (priority := low) : FamilyDef BuildData (.packageFacet p f) (PackageData f) := ⟨rfl⟩
 instance (priority := low) : FamilyDef BuildData (.targetFacet p t f) (TargetData f) := ⟨rfl⟩
-instance (priority := low)  : FamilyDef BuildData (.customTarget p t) (CustomData (p,t)) := ⟨rfl⟩
+instance (priority := low) : FamilyDef BuildData (.customTarget p t) (CustomData (p,t)) := ⟨rfl⟩
 
 --------------------------------------------------------------------------------
 /-! ## Macros for Declaring Build Data                                        -/
@@ -111,7 +113,7 @@ scoped macro (name := libraryDataDecl) doc?:optional(Parser.Command.docComment)
 "library_data " id:ident " : " ty:term : command => do
   let dty := mkCIdentFrom (← getRef) ``TargetData
   let key := Name.quoteFrom id id.getId
-  let id := mkIdentFrom id <| id.getId.modifyBase (`leanLib ++ ·)
+  let id := mkIdentFrom id (canonical := true) <| id.getId.modifyBase (`leanLib ++ ·)
   `($[$doc?]? family_def $id : $dty (`leanLib ++ $key) := $ty)
 
 /-- Macro for declaring new `TargetData`. -/

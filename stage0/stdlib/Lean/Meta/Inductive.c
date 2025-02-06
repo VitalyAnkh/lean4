@@ -1,6 +1,6 @@
 // Lean compiler output
 // Module: Lean.Meta.Inductive
-// Imports: Init Lean.Meta.Basic
+// Imports: Lean.Meta.Basic
 #include <lean/lean.h>
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wunused-parameter"
@@ -13,7 +13,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-lean_object* l_Lean_Expr_const___override(lean_object*, lean_object*);
 lean_object* l_Lean_getConstInfo___at_Lean_Meta_mkConstWithFreshMVarLevels___spec__1(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
 static lean_object* l_Lean_getConstInfoCtor___at_Lean_Meta_compatibleCtors___spec__1___closed__3;
 LEAN_EXPORT lean_object* l_Lean_getConstInfoCtor___at_Lean_Meta_compatibleCtors___spec__1(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
@@ -25,7 +24,7 @@ LEAN_EXPORT lean_object* l_Lean_Meta_compatibleCtors(lean_object*, lean_object*,
 LEAN_EXPORT lean_object* l_Lean_throwError___at_Lean_Meta_compatibleCtors___spec__2(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
 LEAN_EXPORT lean_object* l_Lean_getConstInfoCtor___at_Lean_Meta_compatibleCtors___spec__1___boxed(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
 uint8_t lean_name_eq(lean_object*, lean_object*);
-lean_object* l_Lean_MessageData_ofExpr(lean_object*);
+lean_object* l_Lean_MessageData_ofConstName(lean_object*, uint8_t);
 static lean_object* l_Lean_getConstInfoCtor___at_Lean_Meta_compatibleCtors___spec__1___closed__1;
 lean_object* l_Lean_addMessageContextFull___at_Lean_Meta_instAddMessageContextMetaM___spec__1(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
 static lean_object* l_Lean_getConstInfoCtor___at_Lean_Meta_compatibleCtors___spec__1___closed__4;
@@ -72,7 +71,7 @@ static lean_object* _init_l_Lean_getConstInfoCtor___at_Lean_Meta_compatibleCtors
 _start:
 {
 lean_object* x_1; 
-x_1 = lean_mk_string_from_bytes("'", 1);
+x_1 = lean_mk_string_unchecked("'", 1, 1);
 return x_1;
 }
 }
@@ -89,7 +88,7 @@ static lean_object* _init_l_Lean_getConstInfoCtor___at_Lean_Meta_compatibleCtors
 _start:
 {
 lean_object* x_1; 
-x_1 = lean_mk_string_from_bytes("' is not a constructor", 22);
+x_1 = lean_mk_string_unchecked("' is not a constructor", 22, 22);
 return x_1;
 }
 }
@@ -146,47 +145,46 @@ return x_14;
 }
 else
 {
-lean_object* x_15; lean_object* x_16; lean_object* x_17; lean_object* x_18; lean_object* x_19; lean_object* x_20; lean_object* x_21; lean_object* x_22; lean_object* x_23; 
+lean_object* x_15; uint8_t x_16; lean_object* x_17; lean_object* x_18; lean_object* x_19; lean_object* x_20; lean_object* x_21; lean_object* x_22; 
 lean_dec(x_8);
 x_15 = lean_ctor_get(x_7, 1);
 lean_inc(x_15);
 lean_dec(x_7);
-x_16 = lean_box(0);
-x_17 = l_Lean_Expr_const___override(x_1, x_16);
-x_18 = l_Lean_MessageData_ofExpr(x_17);
-x_19 = l_Lean_getConstInfoCtor___at_Lean_Meta_compatibleCtors___spec__1___closed__2;
-x_20 = lean_alloc_ctor(7, 2, 0);
-lean_ctor_set(x_20, 0, x_19);
-lean_ctor_set(x_20, 1, x_18);
-x_21 = l_Lean_getConstInfoCtor___at_Lean_Meta_compatibleCtors___spec__1___closed__4;
-x_22 = lean_alloc_ctor(7, 2, 0);
-lean_ctor_set(x_22, 0, x_20);
-lean_ctor_set(x_22, 1, x_21);
-x_23 = l_Lean_throwError___at_Lean_Meta_compatibleCtors___spec__2(x_22, x_2, x_3, x_4, x_5, x_15);
-return x_23;
+x_16 = 0;
+x_17 = l_Lean_MessageData_ofConstName(x_1, x_16);
+x_18 = l_Lean_getConstInfoCtor___at_Lean_Meta_compatibleCtors___spec__1___closed__2;
+x_19 = lean_alloc_ctor(7, 2, 0);
+lean_ctor_set(x_19, 0, x_18);
+lean_ctor_set(x_19, 1, x_17);
+x_20 = l_Lean_getConstInfoCtor___at_Lean_Meta_compatibleCtors___spec__1___closed__4;
+x_21 = lean_alloc_ctor(7, 2, 0);
+lean_ctor_set(x_21, 0, x_19);
+lean_ctor_set(x_21, 1, x_20);
+x_22 = l_Lean_throwError___at_Lean_Meta_compatibleCtors___spec__2(x_21, x_2, x_3, x_4, x_5, x_15);
+return x_22;
 }
 }
 else
 {
-uint8_t x_24; 
+uint8_t x_23; 
 lean_dec(x_1);
-x_24 = !lean_is_exclusive(x_7);
-if (x_24 == 0)
+x_23 = !lean_is_exclusive(x_7);
+if (x_23 == 0)
 {
 return x_7;
 }
 else
 {
-lean_object* x_25; lean_object* x_26; lean_object* x_27; 
-x_25 = lean_ctor_get(x_7, 0);
-x_26 = lean_ctor_get(x_7, 1);
-lean_inc(x_26);
+lean_object* x_24; lean_object* x_25; lean_object* x_26; 
+x_24 = lean_ctor_get(x_7, 0);
+x_25 = lean_ctor_get(x_7, 1);
 lean_inc(x_25);
+lean_inc(x_24);
 lean_dec(x_7);
-x_27 = lean_alloc_ctor(1, 2, 0);
-lean_ctor_set(x_27, 0, x_25);
-lean_ctor_set(x_27, 1, x_26);
-return x_27;
+x_26 = lean_alloc_ctor(1, 2, 0);
+lean_ctor_set(x_26, 0, x_24);
+lean_ctor_set(x_26, 1, x_25);
+return x_26;
 }
 }
 }
@@ -581,16 +579,12 @@ lean_dec(x_2);
 return x_7;
 }
 }
-lean_object* initialize_Init(uint8_t builtin, lean_object*);
 lean_object* initialize_Lean_Meta_Basic(uint8_t builtin, lean_object*);
 static bool _G_initialized = false;
 LEAN_EXPORT lean_object* initialize_Lean_Meta_Inductive(uint8_t builtin, lean_object* w) {
 lean_object * res;
 if (_G_initialized) return lean_io_result_mk_ok(lean_box(0));
 _G_initialized = true;
-res = initialize_Init(builtin, lean_io_mk_world());
-if (lean_io_result_is_error(res)) return res;
-lean_dec_ref(res);
 res = initialize_Lean_Meta_Basic(builtin, lean_io_mk_world());
 if (lean_io_result_is_error(res)) return res;
 lean_dec_ref(res);

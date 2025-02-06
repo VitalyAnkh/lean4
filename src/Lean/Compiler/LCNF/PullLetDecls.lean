@@ -3,6 +3,7 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Compiler.LCNF.CompilerM
 import Lean.Compiler.LCNF.DependsOn
 import Lean.Compiler.LCNF.Types
@@ -95,8 +96,8 @@ open PullLetDecls
 def Decl.pullLetDecls (decl : Decl) (isCandidateFn : LetDecl → FVarIdSet → CompilerM Bool) : CompilerM Decl := do
   PullM.run (isCandidateFn := isCandidateFn) do
     withParams decl.params do
-      let value ← pullDecls decl.value
-      let value ← attachToPull value
+      let value ← decl.value.mapCodeM pullDecls
+      let value ← value.mapCodeM attachToPull
       return { decl with value }
 
 def Decl.pullInstances (decl : Decl) : CompilerM Decl :=

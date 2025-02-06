@@ -3,6 +3,9 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: Sebastian Ullrich, Leonardo de Moura
 -/
+prelude
+import Init.Data.Range
+import Init.Data.Hashable
 import Lean.Data.Name
 import Lean.Data.Format
 
@@ -21,11 +24,34 @@ def String.Range.contains (r : String.Range) (pos : String.Pos) (includeStop := 
 def String.Range.includes (super sub : String.Range) : Bool :=
   super.start <= sub.start && super.stop >= sub.stop
 
+def String.Range.overlaps (first second : String.Range)
+    (includeFirstStop := false) (includeSecondStop := false) : Bool :=
+  (if includeFirstStop then second.start <= first.stop else second.start < first.stop) &&
+    (if includeSecondStop then first.start <= second.stop else first.start < second.stop)
+
+def String.Range.bsize (r : String.Range) : Nat :=
+  r.stop.byteIdx - r.start.byteIdx
+
 namespace Lean
 
 def SourceInfo.updateTrailing (trailing : Substring) : SourceInfo → SourceInfo
   | SourceInfo.original leading pos _ endPos => SourceInfo.original leading pos trailing endPos
   | info                                     => info
+
+def SourceInfo.getRange? (canonicalOnly := false) (info : SourceInfo) : Option String.Range :=
+  return ⟨(← info.getPos? canonicalOnly), (← info.getTailPos? canonicalOnly)⟩
+
+/--
+Converts an `original` or `synthetic (canonical := true)` `SourceInfo` to a
+`synthetic (canonical := false)` `SourceInfo`.
+This is sometimes useful when `SourceInfo` is being moved around between `Syntax`es.
+-/
+def SourceInfo.nonCanonicalSynthetic : SourceInfo → SourceInfo
+  | SourceInfo.original _ pos _ endPos => SourceInfo.synthetic pos endPos false
+  | SourceInfo.synthetic pos endPos _  => SourceInfo.synthetic pos endPos false
+  | SourceInfo.none                    => SourceInfo.none
+
+deriving instance BEq for SourceInfo
 
 /-! # Syntax AST -/
 
@@ -34,9 +60,9 @@ inductive IsNode : Syntax → Prop where
 
 def SyntaxNode : Type := {s : Syntax // IsNode s }
 
-def unreachIsNodeMissing {β} (h : IsNode Syntax.missing) : β := False.elim (nomatch h)
-def unreachIsNodeAtom {β} {info val} (h : IsNode (Syntax.atom info val)) : β := False.elim (nomatch h)
-def unreachIsNodeIdent {β info rawVal val preresolved} (h : IsNode (Syntax.ident info rawVal val preresolved)) : β := False.elim (nomatch h)
+def unreachIsNodeMissing {β} : IsNode Syntax.missing → β := nofun
+def unreachIsNodeAtom {β} {info val} : IsNode (Syntax.atom info val) → β := nofun
+def unreachIsNodeIdent {β info rawVal val preresolved} : IsNode (Syntax.ident info rawVal val preresolved) → β := nofun
 
 def isLitKind (k : SyntaxNodeKind) : Bool :=
   k == strLitKind || k == numLitKind || k == charLitKind || k == nameLitKind || k == scientificLitKind
@@ -77,6 +103,60 @@ end SyntaxNode
 
 namespace Syntax
 
+/--
+Compares syntax structures and position ranges, but not whitespace. We generally assume that if
+syntax trees equal in this way generate the same elaboration output, including positions contained
+in e.g. diagnostics and the info tree. However, as we have a few request handlers such as `goalsAt?`
+that are sensitive to whitespace information in the info tree, we currently use `eqWithInfo` instead
+for reuse checks.
+-/
+partial def structRangeEq : Syntax → Syntax → Bool
+  | .missing, .missing => true
+  | .node info k args, .node info' k' args' =>
+    info.getRange? == info'.getRange? && k == k' && args.isEqv args' structRangeEq
+  | .atom info val, .atom info' val' => info.getRange? == info'.getRange? && val == val'
+  | .ident info rawVal val preresolved, .ident info' rawVal' val' preresolved' =>
+    info.getRange? == info'.getRange? && rawVal == rawVal' && val == val' &&
+    preresolved == preresolved'
+  | _, _ => false
+
+/-- Like `structRangeEq` but prints trace on failure if `trace.Elab.reuse` is activated. -/
+def structRangeEqWithTraceReuse (opts : Options) (stx1 stx2 : Syntax) : Bool :=
+  if stx1.structRangeEq stx2 then
+    true
+  else
+    if opts.getBool `trace.Elab.reuse then
+      dbg_trace "reuse stopped:
+{stx1.formatStx (showInfo := true)} !=
+{stx2.formatStx (showInfo := true)}"
+      false
+    else
+      false
+
+
+/-- Full comparison of syntax structures and source infos.  -/
+partial def eqWithInfo : Syntax → Syntax → Bool
+  | .missing, .missing => true
+  | .node info k args, .node info' k' args' =>
+    info == info' && k == k' && args.isEqv args' eqWithInfo
+  | .atom info val, .atom info' val' => info == info' && val == val'
+  | .ident info rawVal val preresolved, .ident info' rawVal' val' preresolved' =>
+    info == info' && rawVal == rawVal' && val == val' && preresolved == preresolved'
+  | _, _ => false
+
+/-- Like `eqWithInfo` but prints trace on failure if `trace.Elab.reuse` is activated. -/
+def eqWithInfoAndTraceReuse (opts : Options) (stx1 stx2 : Syntax) : Bool :=
+  if stx1.eqWithInfo stx2 then
+    true
+  else
+    if opts.getBool `trace.Elab.reuse then
+      dbg_trace "reuse stopped:
+{stx1.formatStx (showInfo := true)} !=
+{stx2.formatStx (showInfo := true)}"
+      false
+    else
+      false
+
 def getAtomVal : Syntax → String
   | atom _ val => val
   | _          => ""
@@ -101,6 +181,16 @@ def asNode : Syntax → SyntaxNode
 
 def getIdAt (stx : Syntax) (i : Nat) : Name :=
   (stx.getArg i).getId
+
+/--
+Check for a `Syntax.ident` of the given name anywhere in the tree.
+This is usually a bad idea since it does not check for shadowing bindings,
+but in the delaborator we assume that bindings are never shadowed.
+-/
+partial def hasIdent (id : Name) : Syntax → Bool
+  | ident _ _ id' _ => id == id'
+  | node _ _ args   => args.any (hasIdent id)
+  | _               => false
 
 @[inline] def modifyArgs (stx : Syntax) (fn : Array Syntax → Array Syntax) : Syntax :=
   match stx with
@@ -176,20 +266,13 @@ partial def updateTrailing (trailing : Substring) : Syntax → Syntax
   | Syntax.atom info val               => Syntax.atom (info.updateTrailing trailing) val
   | Syntax.ident info rawVal val pre   => Syntax.ident (info.updateTrailing trailing) rawVal val pre
   | n@(Syntax.node info k args)        =>
-    if args.size == 0 then n
+    if h : args.size = 0 then n
     else
      let i    := args.size - 1
-     let last := updateTrailing trailing args[i]!
-     let args := args.set! i last;
+     let last := updateTrailing trailing args[i]
+     let args := args.set i last;
      Syntax.node info k args
   | s => s
-
-partial def getTailWithPos : Syntax → Option Syntax
-  | stx@(atom info _)   => info.getPos?.map fun _ => stx
-  | stx@(ident info ..) => info.getPos?.map fun _ => stx
-  | node SourceInfo.none _ args => args.findSomeRev? getTailWithPos
-  | stx@(node ..) => stx
-  | _ => none
 
 open SourceInfo in
 /-- Split an `ident` into its dot-separated components while preserving source info.
@@ -305,6 +388,10 @@ def getRange? (stx : Syntax) (canonicalOnly := false) : Option String.Range :=
   | some start, some stop => some { start, stop }
   | _,          _         => none
 
+/-- Returns a synthetic Syntax which has the specified `String.Range`. -/
+def ofRange (range : String.Range) (canonical := true) : Lean.Syntax :=
+  .atom (.synthetic range.start range.stop canonical) ""
+
 /--
 Represents a cursor into a syntax tree that can be read, written, and advanced down/up/left/right.
 Indices are allowed to be out-of-bound, in which case `cur` is `Syntax.missing`.
@@ -333,7 +420,7 @@ def down (t : Traverser) (idx : Nat) : Traverser :=
 /-- Advance to the parent of the current node, if any. -/
 def up (t : Traverser) : Traverser :=
   if t.parents.size > 0 then
-    let cur := if t.idxs.back < t.parents.back.getNumArgs then t.parents.back.setArg t.idxs.back t.cur else t.parents.back
+    let cur := if t.idxs.back! < t.parents.back!.getNumArgs then t.parents.back!.setArg t.idxs.back! t.cur else t.parents.back!
     { cur := cur, parents := t.parents.pop, idxs := t.idxs.pop }
   else
     t
@@ -341,14 +428,14 @@ def up (t : Traverser) : Traverser :=
 /-- Advance to the left sibling of the current node, if any. -/
 def left (t : Traverser) : Traverser :=
   if t.parents.size > 0 then
-    t.up.down (t.idxs.back - 1)
+    t.up.down (t.idxs.back! - 1)
   else
     t
 
 /-- Advance to the right sibling of the current node, if any. -/
 def right (t : Traverser) : Traverser :=
   if t.parents.size > 0 then
-    t.up.down (t.idxs.back + 1)
+    t.up.down (t.idxs.back! + 1)
   else
     t
 
@@ -530,4 +617,5 @@ def Stack.matches (stack : Syntax.Stack) (pattern : List $ Option SyntaxNodeKind
     |>.all id)
 
 end Syntax
+
 end Lean

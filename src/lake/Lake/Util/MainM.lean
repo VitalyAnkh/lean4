@@ -3,6 +3,7 @@ Copyright (c) 2021 Mac Malone. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Mac Malone
 -/
+prelude
 import Lake.Util.Log
 import Lake.Util.Exit
 import Lake.Util.Error
@@ -33,31 +34,31 @@ namespace MainM
 @[inline] protected def toBaseIO (self : MainM α) : BaseIO (Except ExitCode α) :=
   self.toEIO.toBaseIO
 
-protected def run (self : MainM α) : BaseIO ExitCode :=
+@[inline] protected def run (self : MainM α) : BaseIO ExitCode :=
   self.toBaseIO.map fun | Except.ok _ => 0 | Except.error rc => rc
 
 /-! # Exits -/
 
 /-- Exit with given return code. -/
-protected def exit (rc : ExitCode) : MainM α :=
+@[inline] protected def exit (rc : ExitCode) : MainM α :=
   MainM.mk <| throw rc
 
 instance : MonadExit MainM := ⟨MainM.exit⟩
 
 /-- Try this and catch exits. -/
-protected def tryCatchExit (f : ExitCode → MainM α) (self : MainM α) : MainM α :=
+@[inline] protected def tryCatchExit (f : ExitCode → MainM α) (self : MainM α) : MainM α :=
   self.toEIO.tryCatch f
 
 /-- Try this and catch error codes (i.e., non-zero exits). -/
-protected def tryCatchError (f : ExitCode → MainM α) (self : MainM α) : MainM α :=
+@[inline] protected def tryCatchError (f : ExitCode → MainM α) (self : MainM α) : MainM α :=
   self.tryCatchExit fun rc => if rc = 0 then exit 0 else f rc
 
 /-- Exit with a generic error code (i.e., 1). -/
-protected def failure : MainM α :=
+@[inline] protected def failure : MainM α :=
   exit 1
 
 /-- If this exits with an error code (i.e., not 0), perform other. -/
-protected def orElse (self : MainM α) (other : Unit → MainM α) : MainM α :=
+@[inline] protected def orElse (self : MainM α) (other : Unit → MainM α) : MainM α :=
   self.tryCatchExit fun rc => if rc = 0 then exit 0 else other ()
 
 instance : Alternative MainM where
@@ -66,17 +67,34 @@ instance : Alternative MainM where
 
 /-! # Logging and IO -/
 
-instance : MonadLog MainM := MonadLog.eio
+instance : MonadLog MainM := .stderr
 
 /-- Print out a error line with the given message and then exit with an error code. -/
-protected def error (msg : String) (rc : ExitCode := 1) : MainM α := do
+@[inline] protected def error (msg : String) (rc : ExitCode := 1) : MainM α := do
   logError msg
   exit rc
 
 instance : MonadError MainM := ⟨MainM.error⟩
-instance : MonadLift IO MainM := ⟨MonadError.runEIO⟩
+instance : MonadLift IO MainM := ⟨MonadError.runIO⟩
 
-def runLogIO (x : LogIO α) (verbosity := Verbosity.normal) : MainM α :=
-  liftM <| x.run <| MonadLog.eio verbosity
+@[inline] def runLogIO (x : LogIO α)
+  (minLv := LogLevel.info) (ansiMode := AnsiMode.auto) (out := OutStream.stderr)
+: MainM α := do
+  match (← x {}) with
+  | .ok a  log => replay log (← out.getLogger minLv ansiMode); return a
+  | .error _ log => replay log (← out.getLogger .trace ansiMode); exit 1
+where
+  -- avoid specialization of this call at each call site
+  replay (log : Log) (logger : MonadLog BaseIO) : BaseIO Unit :=
+    log.replay (logger := logger)
 
-instance : MonadLift LogIO MainM := ⟨runLogIO⟩
+instance (priority := low) : MonadLift LogIO MainM := ⟨runLogIO⟩
+
+@[inline] def runLoggerIO (x : LoggerIO α)
+  (minLv := LogLevel.info) (ansiMode := AnsiMode.auto) (out := OutStream.stderr)
+: MainM α := do
+  let some a ← x.run (← out.getLogger minLv ansiMode) |>.toBaseIO
+    | exit 1
+  return a
+
+instance (priority := low) : MonadLift LoggerIO MainM := ⟨runLoggerIO⟩

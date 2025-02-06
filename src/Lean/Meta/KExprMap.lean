@@ -3,13 +3,15 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: Leonardo de Moura
 -/
+prelude
+import Lean.Data.AssocList
 import Lean.HeadIndex
 import Lean.Meta.Basic
 
 namespace Lean.Meta
 
 /--
-  A mapping that indentifies definitionally equal expressions.
+  A mapping that identifies definitionally equal expressions.
   We implement it as a mapping from `HeadIndex` to `AssocList Expr α`.
 
   Remark: this map may be quite inefficient if there are many `HeadIndex` collisions.

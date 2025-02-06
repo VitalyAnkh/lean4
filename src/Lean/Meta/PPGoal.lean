@@ -3,6 +3,7 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: Leonardo de Moura
 -/
+prelude
 import Lean.Meta.InferType
 
 namespace Lean.Meta
@@ -32,7 +33,7 @@ register_builtin_option pp.showLetValues : Bool := {
 }
 
 private def addLine (fmt : Format) : Format :=
-  if fmt.isNil then fmt else fmt ++ Format.line
+  if fmt.isNil then fmt else fmt ++ "\n"
 
 def getGoalPrefix (mvarDecl : MetavarDecl) : String :=
   if isLHSGoal? mvarDecl.type |>.isSome then
@@ -52,7 +53,7 @@ def ppGoal (mvarId : MVarId) : MetaM Format := do
     let lctx           := mvarDecl.lctx
     let lctx           := lctx.sanitizeNames.run' { options := (← getOptions) }
     withLCtx lctx mvarDecl.localInstances do
-      -- The followint two `let rec`s are being used to control the generated code size.
+      -- The following two `let rec`s are being used to control the generated code size.
       -- Then should be remove after we rewrite the compiler in Lean
       let rec pushPending (ids : List Name) (type? : Option Expr) (fmt : Format) : MetaM Format := do
         if ids.isEmpty then
@@ -98,6 +99,6 @@ def ppGoal (mvarId : MVarId) : MetaM Format := do
       let fmt := fmt ++ getGoalPrefix mvarDecl ++ Format.nest indent typeFmt
       match mvarDecl.userName with
       | Name.anonymous => return fmt
-      | name           => return "case " ++ format name.eraseMacroScopes ++ Format.line ++ fmt
+      | name           => return "case " ++ format name.eraseMacroScopes ++ "\n" ++ fmt
 
 end Lean.Meta

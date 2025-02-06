@@ -11,11 +11,14 @@ foreach(var ${vars})
     list(APPEND STAGE0_ARGS "-D${CMAKE_MATCH_1}=${${var}}")
   elseif("${currentHelpString}" MATCHES "No help, variable specified on the command line." OR "${currentHelpString}" STREQUAL "")
     list(APPEND CL_ARGS "-D${var}=${${var}}")
-    if("${var}" STREQUAL "USE_GMP")
+    if("${var}" MATCHES "USE_GMP|CHECK_OLEAN_VERSION")
       # must forward options that generate incompatible .olean format
       list(APPEND STAGE0_ARGS "-D${var}=${${var}}")
     endif()
     if("${var}" MATCHES "LLVM*")
+      list(APPEND STAGE0_ARGS "-D${var}=${${var}}")
+    endif()
+    if("${var}" MATCHES "PKG_CONFIG*")
       list(APPEND STAGE0_ARGS "-D${var}=${${var}}")
     endif()
   elseif(("${var}" MATCHES "CMAKE_.*") AND NOT ("${var}" MATCHES "CMAKE_BUILD_TYPE") AND NOT ("${var}" MATCHES "CMAKE_HOME_DIRECTORY"))
@@ -26,28 +29,46 @@ endforeach()
 include(ExternalProject)
 project(LEAN CXX C)
 
-if("${CMAKE_SYSTEM_NAME}" MATCHES "Emscripten")
-  # For Emscripten, we build GMP before any of the stages and reuse it in all of them.
-  set(GMP_INSTALL_PREFIX ${CMAKE_BINARY_DIR}/gmp-root)
-  set(EMSCRIPTEN_FLAGS "-s ALLOW_MEMORY_GROWTH=1 -s MAIN_MODULE=1 -O3")
-  ExternalProject_Add(
-    gmp
-    URL https://gmplib.org/download/gmp/gmp-6.2.1.tar.bz2
-    URL_HASH SHA256=eae9326beb4158c386e39a356818031bd28f3124cf915f8c5b1dc4c7a36b4d7c
-    BUILD_IN_SOURCE 1
-    CONFIGURE_COMMAND emconfigure ./configure "CFLAGS=${EMSCRIPTEN_FLAGS}" --host=wasm32-unknown-emscripten --disable-assembly --prefix=${GMP_INSTALL_PREFIX}
-    BUILD_COMMAND emmake make -j4
-    INSTALL_COMMAND emmake make install
-  )
-  set(EXTRA_DEPENDS "gmp")
-  list(APPEND CL_ARGS "-DGMP_INSTALL_PREFIX=${GMP_INSTALL_PREFIX}")
-  list(APPEND PLATFORM_ARGS "-DGMP_INSTALL_PREFIX=${GMP_INSTALL_PREFIX}")
+if(NOT (DEFINED STAGE0_CMAKE_EXECUTABLE_SUFFIX))
+    set(STAGE0_CMAKE_EXECUTABLE_SUFFIX "${CMAKE_EXECUTABLE_SUFFIX}")
 endif()
+
+# Don't do anything with cadical on wasm
+if (NOT ${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
+  # On CI Linux, we source cadical from Nix instead; see flake.nix
+  find_program(CADICAL cadical)
+  if(NOT CADICAL)
+    set(CADICAL_CXX c++)
+    find_program(CCACHE ccache)
+    if(CCACHE)
+      set(CADICAL_CXX "${CCACHE} ${CADICAL_CXX}")
+    endif()
+    # missing stdio locking API on Windows
+    if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
+      string(APPEND CADICAL_CXXFLAGS " -DNUNLOCKED")
+    endif()
+    ExternalProject_add(cadical
+      PREFIX cadical
+      GIT_REPOSITORY https://github.com/arminbiere/cadical
+      GIT_TAG rel-1.9.5
+      CONFIGURE_COMMAND ""
+      # https://github.com/arminbiere/cadical/blob/master/BUILD.md#manual-build
+      BUILD_COMMAND $(MAKE) -f ${CMAKE_SOURCE_DIR}/src/cadical.mk CMAKE_EXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX} CXX=${CADICAL_CXX} CXXFLAGS=${CADICAL_CXXFLAGS}
+      BUILD_IN_SOURCE ON
+      INSTALL_COMMAND "")
+    set(CADICAL ${CMAKE_BINARY_DIR}/cadical/cadical${CMAKE_EXECUTABLE_SUFFIX} CACHE FILEPATH "path to cadical binary" FORCE)
+    set(EXTRA_DEPENDS "cadical")
+  endif()
+  list(APPEND CL_ARGS -DCADICAL=${CADICAL})
+endif()
+
 ExternalProject_add(stage0
   SOURCE_DIR "${LEAN_SOURCE_DIR}/stage0"
   SOURCE_SUBDIR src
   BINARY_DIR stage0
   # do not rebuild stage0 when git hash changes; it's not from this commit anyway
+  # (however, `CHECK_OLEAN_VERSION=ON` in CI will override this as we need to
+  # embed the githash into the stage 1 library built by stage 0)
   CMAKE_ARGS -DSTAGE=0 -DUSE_GITHASH=OFF ${PLATFORM_ARGS} ${STAGE0_ARGS}
   BUILD_ALWAYS ON  # cmake doesn't auto-detect changes without a download method
   INSTALL_COMMAND ""  # skip install
@@ -57,7 +78,7 @@ ExternalProject_add(stage1
   SOURCE_DIR "${LEAN_SOURCE_DIR}"
   SOURCE_SUBDIR src
   BINARY_DIR stage1
-  CMAKE_ARGS -DSTAGE=1 -DPREV_STAGE=${CMAKE_BINARY_DIR}/stage0 ${CL_ARGS}
+  CMAKE_ARGS -DSTAGE=1 -DPREV_STAGE=${CMAKE_BINARY_DIR}/stage0 -DPREV_STAGE_CMAKE_EXECUTABLE_SUFFIX=${STAGE0_CMAKE_EXECUTABLE_SUFFIX} ${CL_ARGS}
   BUILD_ALWAYS ON
   INSTALL_COMMAND ""
   DEPENDS stage0
@@ -66,7 +87,7 @@ ExternalProject_add(stage2
   SOURCE_DIR "${LEAN_SOURCE_DIR}"
   SOURCE_SUBDIR src
   BINARY_DIR stage2
-  CMAKE_ARGS -DSTAGE=2 -DPREV_STAGE=${CMAKE_BINARY_DIR}/stage1 ${CL_ARGS}
+  CMAKE_ARGS -DSTAGE=2 -DPREV_STAGE=${CMAKE_BINARY_DIR}/stage1 -DPREV_STAGE_CMAKE_EXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX} ${CL_ARGS}
   BUILD_ALWAYS ON
   INSTALL_COMMAND ""
   DEPENDS stage1
@@ -76,7 +97,7 @@ ExternalProject_add(stage3
   SOURCE_DIR "${LEAN_SOURCE_DIR}"
   SOURCE_SUBDIR src
   BINARY_DIR stage3
-  CMAKE_ARGS -DSTAGE=3 -DPREV_STAGE=${CMAKE_BINARY_DIR}/stage2 ${CL_ARGS}
+  CMAKE_ARGS -DSTAGE=3 -DPREV_STAGE=${CMAKE_BINARY_DIR}/stage2 -DPREV_STAGE_CMAKE_EXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX} ${CL_ARGS}
   BUILD_ALWAYS ON
   INSTALL_COMMAND ""
   DEPENDS stage2
@@ -87,6 +108,10 @@ ExternalProject_add(stage3
 
 add_custom_target(update-stage0
   COMMAND $(MAKE) -C stage1 update-stage0
+  DEPENDS stage1)
+
+add_custom_target(update-stage0-commit
+  COMMAND $(MAKE) -C stage1 update-stage0-commit
   DEPENDS stage1)
 
 add_custom_target(test

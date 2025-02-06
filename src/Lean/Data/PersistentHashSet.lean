@@ -3,6 +3,7 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: Leonardo de Moura
 -/
+prelude
 import Lean.Data.PersistentHashMap
 
 namespace Lean
@@ -43,11 +44,13 @@ variable {_ : BEq α} {_ : Hashable α}
 @[inline] def contains (s : PersistentHashSet α) (a : α) : Bool :=
   s.set.contains a
 
-@[inline] def size (s : PersistentHashSet α) : Nat :=
-  s.set.size
-
 @[inline] def foldM {β : Type v} {m : Type v → Type v} [Monad m] (f : β → α → m β) (init : β) (s : PersistentHashSet α) : m β :=
   s.set.foldlM (init := init) fun d a _ => f d a
 
 @[inline] def fold {β : Type v} (f : β → α → β) (init : β) (s : PersistentHashSet α) : β :=
   Id.run $ s.foldM f init
+
+def toList (s : PersistentHashSet α) : List α :=
+  s.set.toList.map (·.1)
+
+end PersistentHashSet

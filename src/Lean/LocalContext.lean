@@ -3,6 +3,8 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
+import Init.Data.Nat.Control
 import Lean.Data.PersistentArray
 import Lean.Expr
 import Lean.Hygiene
@@ -40,16 +42,15 @@ inductive LocalDeclKind
   | auxDecl
   deriving Inhabited, Repr, DecidableEq, Hashable
 
-/-- A declaration for a LocalContext. This is used to register which free variables are in scope.
-Each declaration comes with
-- `index` the position of the decl in the local context
-- `fvarId` the unique id of the free variables
-- `userName` the pretty-printable name of the variable
-- `type` the type.
-A `cdecl` is a local variable, a `ldecl` is a let-bound free variable with a `value : Expr`.
+/-- A declaration for a `LocalContext`. This is used to register which free variables are in scope.
+
+See `LocalDecl.index`, `LocalDecl.fvarId`, `LocalDecl.userName`, `LocalDecl.type` for accessors for
+arguments common to both constructors.
 -/
 inductive LocalDecl where
+  /-- A local variable. -/
   | cdecl (index : Nat) (fvarId : FVarId) (userName : Name) (type : Expr) (bi : BinderInfo) (kind : LocalDeclKind)
+  /-- A let-bound free variable, with a `value : Expr`. -/
   | ldecl (index : Nat) (fvarId : FVarId) (userName : Name) (type : Expr) (value : Expr) (nonDep : Bool) (kind : LocalDeclKind)
   deriving Inhabited
 
@@ -69,6 +70,7 @@ def isLet : LocalDecl → Bool
   | cdecl .. => false
   | ldecl .. => true
 
+/-- The position of the decl in the local context. -/
 def index : LocalDecl → Nat
   | cdecl (index := i) .. => i
   | ldecl (index := i) .. => i
@@ -77,14 +79,17 @@ def setIndex : LocalDecl → Nat → LocalDecl
   | cdecl _  id n t bi k,   idx => cdecl idx id n t bi k
   | ldecl _  id n t v nd k, idx => ldecl idx id n t v nd k
 
+/-- The unique id of the free variable. -/
 def fvarId : LocalDecl → FVarId
   | cdecl (fvarId := id) .. => id
   | ldecl (fvarId := id) .. => id
 
+/-- The pretty-printable name of the variable. -/
 def userName : LocalDecl → Name
   | cdecl (userName := n) .. => n
   | ldecl (userName := n) .. => n
 
+/-- The type of the variable. -/
 def type : LocalDecl → Expr
   | cdecl (type := t) .. => t
   | ldecl (type := t) .. => t
@@ -140,6 +145,15 @@ def toExpr (decl : LocalDecl) : Expr :=
 def hasExprMVar : LocalDecl → Bool
   | cdecl (type := t) ..              => t.hasExprMVar
   | ldecl (type := t) (value := v) .. => t.hasExprMVar || v.hasExprMVar
+
+/--
+Set the kind of a `LocalDecl`.
+-/
+def setKind : LocalDecl → LocalDeclKind → LocalDecl
+  | cdecl index fvarId userName type bi _, kind =>
+      cdecl index fvarId userName type bi kind
+  | ldecl index fvarId userName type value nonDep _, kind =>
+      ldecl index fvarId userName type value nonDep kind
 
 end LocalDecl
 
@@ -311,6 +325,13 @@ def renameUserName (lctx : LocalContext) (fromName : Name) (toName : Name) : Loc
       { fvarIdToDecl := map.insert decl.fvarId decl
         decls        := decls.set decl.index decl }
 
+/--
+Set the kind of the given fvar.
+-/
+def setKind (lctx : LocalContext) (fvarId : FVarId)
+    (kind : LocalDeclKind) : LocalContext :=
+  lctx.modifyLocalDecl fvarId (·.setKind kind)
+
 def setBinderInfo (lctx : LocalContext) (fvarId : FVarId) (bi : BinderInfo) : LocalContext :=
   modifyLocalDecl lctx fvarId fun decl => decl.setBinderInfo bi
 
@@ -367,14 +388,14 @@ def size (lctx : LocalContext) : Nat :=
   Id.run <| lctx.findDeclRevM? f
 
 partial def isSubPrefixOfAux (a₁ a₂ : PArray (Option LocalDecl)) (exceptFVars : Array Expr) (i j : Nat) : Bool :=
-  if i < a₁.size then
-    match a₁[i]! with
+  if h : i < a₁.size then
+    match a₁[i] with
     | none       => isSubPrefixOfAux a₁ a₂ exceptFVars (i+1) j
     | some decl₁ =>
       if exceptFVars.any fun fvar => fvar.fvarId! == decl₁.fvarId then
         isSubPrefixOfAux a₁ a₂ exceptFVars (i+1) j
-      else if j < a₂.size then
-        match a₂[j]! with
+      else if h2 : j < a₂.size then
+        match a₂[j] with
         | none       => isSubPrefixOfAux a₁ a₂ exceptFVars i (j+1)
         | some decl₂ => if decl₁.fvarId == decl₂.fvarId then isSubPrefixOfAux a₁ a₂ exceptFVars (i+1) (j+1) else isSubPrefixOfAux a₁ a₂ exceptFVars i (j+1)
       else false
@@ -388,8 +409,8 @@ def isSubPrefixOf (lctx₁ lctx₂ : LocalContext) (exceptFVars : Array Expr := 
 
 @[inline] def mkBinding (isLambda : Bool) (lctx : LocalContext) (xs : Array Expr) (b : Expr) : Expr :=
   let b := b.abstract xs
-  xs.size.foldRev (init := b) fun i b =>
-    let x := xs[i]!
+  xs.size.foldRev (init := b) fun i _ b =>
+    let x := xs[i]
     match lctx.findFVar? x with
     | some (.cdecl _ _ n ty bi _)  =>
       let ty := ty.abstractRange i xs;
@@ -439,7 +460,7 @@ def sanitizeNames (lctx : LocalContext) : StateM NameSanitizerState LocalContext
   let st ← get
   if !getSanitizeNames st.options then pure lctx else
     StateT.run' (s := ({} : NameSet)) <|
-      lctx.decls.size.foldRevM (init := lctx) fun i lctx => do
+      lctx.decls.size.foldRevM (init := lctx) fun i _ lctx => do
         match lctx.decls[i]! with
         | none      => pure lctx
         | some decl =>
@@ -451,6 +472,27 @@ def sanitizeNames (lctx : LocalContext) : StateM NameSanitizerState LocalContext
             modify fun s => s.insert decl.userName
             pure lctx
 
+/--
+Given an `FVarId`, this function returns the corresponding user name,
+but only if the name can be used to recover the original FVarId.
+-/
+def getRoundtrippingUserName? (lctx : LocalContext) (fvarId : FVarId) : Option Name := do
+  let ldecl₁ ← lctx.find? fvarId
+  let ldecl₂ ← lctx.findFromUserName? ldecl₁.userName
+  guard <| ldecl₁.fvarId == ldecl₂.fvarId
+  some ldecl₁.userName
+
+/--
+Sort the given `FVarId`s by the order in which they appear in `lctx`. If any of
+the `FVarId`s do not appear in `lctx`, the result is unspecified.
+-/
+def sortFVarsByContextOrder (lctx : LocalContext) (hyps : Array FVarId) : Array FVarId :=
+  let hyps := hyps.map fun fvarId =>
+    match lctx.fvarIdToDecl.find? fvarId with
+    | none => (0, fvarId)
+    | some ldecl => (ldecl.index, fvarId)
+  hyps.qsort (fun h i => h.fst < i.fst) |>.map (·.snd)
+
 end LocalContext
 
 /-- Class used to denote that `m` has a local context. -/
@@ -461,6 +503,13 @@ export MonadLCtx (getLCtx)
 
 instance [MonadLift m n] [MonadLCtx m] : MonadLCtx n where
   getLCtx := liftM (getLCtx : m _)
+
+/-- Return local hypotheses which are not "implementation detail", as `Expr`s. -/
+def getLocalHyps [Monad m] [MonadLCtx m] : m (Array Expr) := do
+  let mut hs := #[]
+  for d in ← getLCtx do
+    if !d.isImplementationDetail then hs := hs.push d.toExpr
+  return hs
 
 def LocalDecl.replaceFVarId (fvarId : FVarId) (e : Expr) (d : LocalDecl) : LocalDecl :=
   if d.fvarId == fvarId then d

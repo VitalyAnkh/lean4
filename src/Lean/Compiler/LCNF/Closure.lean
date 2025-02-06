@@ -3,6 +3,7 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Util.ForEachExprWhere
 import Lean.Compiler.LCNF.CompilerM
 
@@ -24,7 +25,7 @@ structure Context where
   inScope : FVarId → Bool
   /--
   If `abstract x` returns `true`, we convert `x` into a closure parameter. Otherwise,
-  we collect the dependecies in the `let`/`fun`-declaration too, and include the declaration in the closure.
+  we collect the dependencies in the `let`/`fun`-declaration too, and include the declaration in the closure.
   Remark: the lambda lifting pass abstracts all `let`/`fun`-declarations.
   -/
   abstract : FVarId → Bool

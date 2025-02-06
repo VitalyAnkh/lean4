@@ -3,6 +3,7 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Environment
 
 namespace Lean
@@ -34,7 +35,7 @@ def checkIsDefinition (env : Environment) (n : Name) : Except String Unit :=
 match env.find? n with
   | (some (ConstantInfo.defnInfo _))   => Except.ok ()
   | (some (ConstantInfo.opaqueInfo _)) => Except.ok ()
-  | none => Except.error s!"unknow declaration '{n}'"
+  | none => Except.error s!"unknown declaration '{n}'"
   | _    => Except.error s!"declaration is not a definition '{n}'"
 
 /--
@@ -52,23 +53,3 @@ def isUnsafeRecName? : Name → Option Name
   | _ => none
 
 end Compiler
-
-namespace Environment
-
-/--
-Compile the given block of mutual declarations.
-Assumes the declarations have already been added to the environment using `addDecl`.
--/
-@[extern "lean_compile_decls"]
-opaque compileDecls (env : Environment) (opt : @& Options) (decls : @& List Name) : Except KernelException Environment
-
-/-- Compile the given declaration, it assumes the declaration has already been added to the environment using `addDecl`. -/
-def compileDecl (env : Environment) (opt : @& Options) (decl : @& Declaration) : Except KernelException Environment :=
-  compileDecls env opt (Compiler.getDeclNamesForCodeGen decl)
-
-
-def addAndCompile (env : Environment) (opt : Options) (decl : Declaration) : Except KernelException Environment := do
-  let env ← addDecl env decl
-  compileDecl env opt decl
-
-end Environment

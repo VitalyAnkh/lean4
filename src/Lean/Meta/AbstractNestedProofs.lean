@@ -3,6 +3,8 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
+import Init.Grind.Util
 import Lean.Meta.Closure
 
 namespace Lean.Meta
@@ -15,7 +17,12 @@ def getLambdaBody (e : Expr) : Expr :=
 
 def isNonTrivialProof (e : Expr) : MetaM Bool := do
   if !(← isProof e) then
-    pure false
+    return false
+  else if e.isAppOf ``Grind.nestedProof then
+    -- Grind.nestedProof is a gadget created by the `grind` tactic.
+    -- We want to avoid the situation where `grind` keeps creating them,
+    -- and this module, which is used by `grind`, keeps abstracting them.
+    return false
   else
     -- We consider proofs such as `fun x => f x a` as trivial.
     -- For example, we don't want to abstract the body of `def rfl`
@@ -35,10 +42,10 @@ private def mkAuxLemma (e : Expr) : M Expr := do
   let s ← get
   let lemmaName ← mkAuxName (ctx.baseName ++ `proof) s.nextIdx
   modify fun s => { s with nextIdx := s.nextIdx + 1 }
-  /- We turn on zeta-expansion to make sure we don't need to perform an expensive `check` step to
-     identify which let-decls can be abstracted. If we design a more efficient test, we can avoid the eager zeta expasion step.
+  /- We turn on zetaDelta-expansion to make sure we don't need to perform an expensive `check` step to
+     identify which let-decls can be abstracted. If we design a more efficient test, we can avoid the eager zetaDelta expansion step.
      It a benchmark created by @selsam, The extra `check` step was a bottleneck. -/
-  mkAuxTheoremFor lemmaName e (zeta := true)
+  mkAuxTheoremFor lemmaName e (zetaDelta := true)
 
 partial def visit (e : Expr) : M Expr := do
   if e.isAtomic then
@@ -72,7 +79,11 @@ partial def visit (e : Expr) : M Expr := do
 end AbstractNestedProofs
 
 /-- Replace proofs nested in `e` with new lemmas. The new lemmas have names of the form `mainDeclName.proof_<idx>` -/
-def abstractNestedProofs (mainDeclName : Name) (e : Expr) : MetaM Expr :=
-  AbstractNestedProofs.visit e |>.run { baseName := mainDeclName } |>.run |>.run' { nextIdx := 1 }
+def abstractNestedProofs (mainDeclName : Name) (e : Expr) : MetaM Expr := do
+  if (← isProof e) then
+    -- `e` is a proof itself. So, we don't abstract nested proofs
+    return e
+  else
+    AbstractNestedProofs.visit e |>.run { baseName := mainDeclName } |>.run |>.run' { nextIdx := 1 }
 
 end Lean.Meta

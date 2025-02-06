@@ -3,6 +3,7 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Compiler.IR.Basic
 import Lean.Compiler.IR.FreeVars
 import Lean.Compiler.IR.NormIds
@@ -12,7 +13,7 @@ namespace Lean.IR
 partial def pushProjs (bs : Array FnBody) (alts : Array Alt) (altsF : Array IndexSet) (ctx : Array FnBody) (ctxF : IndexSet) : Array FnBody × Array Alt :=
   if bs.isEmpty then (ctx.reverse, alts)
   else
-    let b    := bs.back
+    let b    := bs.back!
     let bs   := bs.pop
     let done (_ : Unit) := (bs.push b ++ ctx.reverse, alts)
     let skip (_ : Unit) := pushProjs bs alts altsF (ctx.push b) (b.collectFreeIndices ctxF)

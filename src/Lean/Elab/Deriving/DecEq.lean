@@ -3,6 +3,7 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Meta.Transform
 import Lean.Meta.Inductive
 import Lean.Elab.Deriving.Basic
@@ -15,24 +16,25 @@ open Meta
 def mkDecEqHeader (indVal : InductiveVal) : TermElabM Header := do
   mkHeader `DecidableEq 2 indVal
 
-def mkMatch (header : Header) (indVal : InductiveVal) (auxFunName : Name) : TermElabM Term := do
+def mkMatch (ctx : Context) (header : Header) (indVal : InductiveVal) : TermElabM Term := do
   let discrs ← mkDiscrs header indVal
   let alts ← mkAlts
   `(match $[$discrs],* with $alts:matchAlt*)
 where
-  mkSameCtorRhs : List (Ident × Ident × Bool × Bool) → TermElabM Term
+  mkSameCtorRhs : List (Ident × Ident × Option Name × Bool) → TermElabM Term
     | [] => ``(isTrue rfl)
     | (a, b, recField, isProof) :: todo => withFreshMacroScope do
       let rhs ← if isProof then
-        `(have h : $a = $b := rfl; by subst h; exact $(← mkSameCtorRhs todo):term)
+        `(have h : @$a = @$b := rfl; by subst h; exact $(← mkSameCtorRhs todo):term)
       else
-        `(if h : $a = $b then
-           by subst h; exact $(← mkSameCtorRhs todo):term
+        let sameCtor ← mkSameCtorRhs todo
+        `(if h : @$a = @$b then
+           by subst h; exact $sameCtor:term
           else
            isFalse (by intro n; injection n; apply h _; assumption))
-      if recField then
+      if let some auxFunName := recField then
         -- add local instance for `a = b` using the function being defined `auxFunName`
-        `(let inst := $(mkIdent auxFunName) $a $b; $rhs)
+        `(let inst := $(mkIdent auxFunName) @$a @$b; $rhs)
       else
         return rhs
 
@@ -67,8 +69,12 @@ where
                 let b := mkIdent (← mkFreshUserName `b)
                 ctorArgs1 := ctorArgs1.push a
                 ctorArgs2 := ctorArgs2.push b
-                let recField  := (← inferType x).isAppOf indVal.name
-                let isProof := (← inferType (← inferType x)).isProp
+                let xType ← inferType x
+                let indValNum :=
+                  ctx.typeInfos.findIdx?
+                  (xType.isAppOf ∘ ConstantVal.name ∘ InductiveVal.toConstantVal)
+                let recField  := indValNum.map (ctx.auxFunNames[·]!)
+                let isProof ← isProp xType
                 todo := todo.push (a, b, recField, isProof)
             patterns := patterns.push (← `(@$(mkIdent ctorName₁):ident $ctorArgs1:term*))
             patterns := patterns.push (← `(@$(mkIdent ctorName₁):ident $ctorArgs2:term*))
@@ -81,18 +87,30 @@ where
           alts := alts.push (← `(matchAltExpr| | $[$patterns:term],* => $rhs:term))
     return alts
 
-def mkAuxFunction (ctx : Context) : TermElabM Syntax := do
-  let auxFunName := ctx.auxFunNames[0]!
-  let indVal     :=ctx.typeInfos[0]!
-  let header     ← mkDecEqHeader indVal
-  let mut body   ← mkMatch header indVal auxFunName
-  let binders    := header.binders
-  let type       ← `(Decidable ($(mkIdent header.targetNames[0]!) = $(mkIdent header.targetNames[1]!)))
-  `(private def $(mkIdent auxFunName):ident $binders:bracketedBinder* : $type:term := $body:term)
+def mkAuxFunction (ctx : Context) (auxFunName : Name) (indVal : InductiveVal): TermElabM (TSyntax `command) := do
+  let header  ← mkDecEqHeader indVal
+  let body    ← mkMatch ctx header indVal
+  let binders := header.binders
+  let target₁ := mkIdent header.targetNames[0]!
+  let target₂ := mkIdent header.targetNames[1]!
+  let termSuffix ← if indVal.isRec
+    then `(Parser.Termination.suffix|termination_by structural $target₁)
+    else `(Parser.Termination.suffix|)
+  let type    ← `(Decidable ($target₁ = $target₂))
+  `(private def $(mkIdent auxFunName):ident $binders:bracketedBinder* : $type:term := $body:term
+    $termSuffix:suffix)
+
+def mkAuxFunctions (ctx : Context) : TermElabM (TSyntax `command) := do
+  let mut res : Array (TSyntax `command) := #[]
+  for i in [:ctx.auxFunNames.size] do
+    let auxFunName := ctx.auxFunNames[i]!
+    let indVal     := ctx.typeInfos[i]!
+    res := res.push (← mkAuxFunction ctx auxFunName indVal)
+  `(command| mutual $[$res:command]* end)
 
 def mkDecEqCmds (indVal : InductiveVal) : TermElabM (Array Syntax) := do
   let ctx ← mkContext "decEq" indVal.name
-  let cmds := #[← mkAuxFunction ctx] ++ (← mkInstanceCmds ctx `DecidableEq #[indVal.name] (useAnonCtor := false))
+  let cmds := #[← mkAuxFunctions ctx] ++ (← mkInstanceCmds ctx `DecidableEq #[indVal.name] (useAnonCtor := false))
   trace[Elab.Deriving.decEq] "\n{cmds}"
   return cmds
 
@@ -104,7 +122,11 @@ def mkDecEq (declName : Name) : CommandElabM Bool := do
     return false -- nested inductive types are not supported yet
   else
     let cmds ← liftTermElabM <| mkDecEqCmds indVal
-    cmds.forM elabCommand
+    -- `cmds` can have a number of syntax nodes quadratic in the number of constructors
+    -- and thus create as many info tree nodes, which we never make use of but which can
+    -- significantly slow down e.g. the unused variables linter; avoid creating them
+    withEnableInfoTree false do
+      cmds.forM elabCommand
     return true
 
 partial def mkEnumOfNat (declName : Name) : MetaM Unit := do
@@ -173,14 +195,15 @@ def mkDecEqEnum (declName : Name) : CommandElabM Unit := do
   trace[Elab.Deriving.decEq] "\n{cmd}"
   elabCommand cmd
 
-def mkDecEqInstanceHandler (declNames : Array Name) : CommandElabM Bool := do
-  if declNames.size != 1 then
-    return false -- mutually inductive types are not supported yet
-  else if (← isEnumType declNames[0]!) then
-    mkDecEqEnum declNames[0]!
+def mkDecEqInstance (declName : Name) : CommandElabM Bool := do
+  if (← isEnumType declName) then
+    mkDecEqEnum declName
     return true
   else
-    mkDecEq declNames[0]!
+    mkDecEq declName
+
+def mkDecEqInstanceHandler (declNames : Array Name) : CommandElabM Bool := do
+  declNames.foldlM (fun b n => andM (pure b) (mkDecEqInstance n)) true
 
 builtin_initialize
   registerDerivingHandler `DecidableEq mkDecEqInstanceHandler

@@ -1,22 +1,18 @@
 import Lake
 open Lake DSL
 
-package targets {
+package targets where
   srcDir := "src"
-}
 
 @[default_target]
-lean_lib foo {
+lean_lib Foo where
   defaultFacets := #[LeanLib.staticFacet]
-}
 
-lean_lib bar {
+lean_lib Bar where
   defaultFacets := #[LeanLib.sharedFacet]
-}
 
-lean_lib baz {
+lean_lib Baz where
   extraDepTargets := #[`caw]
-}
 
 lean_exe a
 lean_exe b
@@ -40,17 +36,15 @@ target bark : Unit := do
 target bark_bark : Unit := do
   bark.fetch
 
-package_facet print_name pkg : Unit := do
+package_facet print_name pkg : Unit := Job.async do
   IO.println pkg.name
-  return .nil
 
-module_facet get_src mod : FilePath := do
-  inputFile mod.leanFile
+module_facet get_src mod : System.FilePath := do
+  inputTextFile mod.leanFile
 
 module_facet print_src mod : Unit := do
-  (← fetch <| mod.facet `get_src).bindSync fun src trace => do
+  (← fetch <| mod.facet `get_src).mapM fun src => do
     IO.println src
-    return ((), trace)
 
 library_facet print_name lib : Unit := do
   IO.println lib.name

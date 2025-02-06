@@ -3,6 +3,7 @@ Copyright (c) 2022 Henrik Böving. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Henrik Böving
 -/
+prelude
 import Lean.Compiler.LCNF.CompilerM
 import Lean.Compiler.LCNF.PassManager
 import Lean.Compiler.LCNF.PhaseExt
@@ -26,7 +27,7 @@ inductive Value where
   -/
   | top
   /--
-  A certian consructor with a certain sets of parameters is possible.
+  A certain constructor with a certain sets of parameters is possible.
   -/
   | ctor (i : Name) (vs : Array Value)
   /--
@@ -79,7 +80,7 @@ partial def merge (v1 v2 : Value) : Value :=
   | top, _ | _, top => top
   | ctor i1 vs1, ctor i2 vs2 =>
     if i1 == i2 then
-      ctor i1 (vs1.zipWith vs2 merge)
+      ctor i1 (Array.zipWith merge vs1 vs2)
     else
       choice [v1, v2]
   | choice vs1, choice vs2 =>
@@ -267,7 +268,7 @@ def getFunctionSummary? (env : Environment) (fid : Name) : Option Value :=
 A map from variable identifiers to the `Value` produced by the abstract
 interpreter for them.
 -/
-abbrev Assignment := HashMap FVarId Value
+abbrev Assignment := Std.HashMap FVarId Value
 
 /--
 The context of `InterpM`.
@@ -331,7 +332,7 @@ If none is available return `Value.bot`.
 -/
 def findVarValue (var : FVarId) : InterpM Value := do
   let assignment ← getAssignment
-  return assignment.findD var .bot
+  return assignment.getD var .bot
 
 /--
 Find the value of `arg` using the logic of `findVarValue`.
@@ -504,15 +505,15 @@ ones. Return whether any `Value` got updated in the process.
 -/
 def inferStep : InterpM Bool := do
   let ctx ← read
-  for idx in [0:ctx.decls.size] do
-    let decl := ctx.decls[idx]!
+  for h : idx in [0:ctx.decls.size] do
+    let decl := ctx.decls[idx]
     if !decl.safe then
       continue
 
     let currentVal ← getFunVal idx
     withReader (fun ctx => { ctx with currFnIdx := idx }) do
       decl.params.forM fun p => updateVarAssignment p.fvarId .top
-      interpCode decl.value
+      decl.value.forCodeM interpCode
     let newVal ← getFunVal idx
     if currentVal != newVal then
       return true
@@ -531,13 +532,13 @@ partial def inferMain : InterpM Unit := do
     return ()
 
 /--
-Use the information produced by the abstract interpeter to:
+Use the information produced by the abstract interpreter to:
 - Eliminate branches that we know cannot be hit
 - Eliminate values that we know have to be constants.
 -/
 partial def elimDead (assignment : Assignment) (decl : Decl) : CompilerM Decl := do
   trace[Compiler.elimDeadBranches] s!"Eliminating {decl.name} with {repr (← assignment.toArray |>.mapM (fun (name, val) => do return (toString (← getBinderName name), val)))}"
-  return { decl with value := (← go decl.value) }
+  return { decl with value := (← decl.value.mapCodeM go) }
 where
   go (code : Code) : CompilerM Code := do
     match code with
@@ -546,13 +547,13 @@ where
     | .jp decl k | .fun decl k =>
       return code.updateFun! (← decl.updateValue (← go decl.value)) (← go k)
     | .cases cs =>
-      let discrVal := assignment.findD cs.discr .bot
+      let discrVal := assignment.getD cs.discr .bot
       let processAlt typ alt := do
         match alt with
         | .alt ctor args body =>
           if discrVal.containsCtor ctor then
             let filter param := do
-              if let some val := assignment.find? param.fvarId then
+              if let some val := assignment[param.fvarId]? then
                 if let some literal ← val.getLiteral then
                   return some (param, literal)
               return none
@@ -586,15 +587,15 @@ def Decl.elimDeadBranches (decls : Array Decl) : CompilerM (Array Decl) := do
     refer to the docstring of `Decl.safe`.
     -/
     if decls[i]!.safe then .bot else .top
-  let mut funVals := decls.size.fold (init := .empty) fun i p => p.push (initialVal i)
+  let mut funVals := decls.size.fold (init := .empty) fun i _ p => p.push (initialVal i)
   let ctx := { decls }
   let mut state := { assignments, funVals }
   (_, state) ← inferMain |>.run ctx |>.run state
   funVals := state.funVals
   assignments := state.assignments
   modifyEnv fun e =>
-    decls.size.fold (init := e) fun i env =>
-      addFunctionSummary env decls[i]!.name funVals[i]!
+    decls.size.fold (init := e) fun i _ env =>
+      addFunctionSummary env decls[i].name funVals[i]!
 
   decls.mapIdxM fun i decl => if decl.safe then elimDead assignments[i]! decl else return decl
 

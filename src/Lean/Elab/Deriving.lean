@@ -3,6 +3,7 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Elab.Deriving.Basic
 import Lean.Elab.Deriving.Util
 import Lean.Elab.Deriving.Inhabited
@@ -15,3 +16,4 @@ import Lean.Elab.Deriving.FromToJson
 import Lean.Elab.Deriving.SizeOf
 import Lean.Elab.Deriving.Hashable
 import Lean.Elab.Deriving.Ord
+import Lean.Elab.Deriving.ToExpr

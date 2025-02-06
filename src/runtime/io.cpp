@@ -5,6 +5,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura, Sebastian Ullrich
 */
 #if defined(LEAN_WINDOWS)
+#include <icu.h>
 #include <windows.h>
 #include <io.h>
 #define NOMINMAX // prevent ntdef.h from defining min/max macros
@@ -20,7 +21,10 @@ Authors: Leonardo de Moura, Sebastian Ullrich
 // Linux include files
 #include <unistd.h> // NOLINT
 #include <sys/mman.h>
+#include <sys/file.h>
+#ifndef LEAN_EMSCRIPTEN
 #include <sys/random.h>
+#endif
 #endif
 #ifndef LEAN_WINDOWS
 #include <csignal>
@@ -36,6 +40,7 @@ Authors: Leonardo de Moura, Sebastian Ullrich
 #include <cstdlib>
 #include <cctype>
 #include <sys/stat.h>
+#include <uv.h>
 #include "util/io.h"
 #include "runtime/alloc.h"
 #include "runtime/io.h"
@@ -86,7 +91,11 @@ static obj_res mk_file_not_found_error(b_obj_arg fname) {
 static lean_external_class * g_io_handle_external_class = nullptr;
 
 static void io_handle_finalizer(void * h) {
-    lean_always_assert(fclose(static_cast<FILE *>(h)) == 0);
+    // There is no sensible way to handle errors here; in particular, we should
+    // not panic as finalizing a handle that already is in an invalid state
+    // (broken pipe etc.) should work and not terminate the process. The same
+    // decision was made for `std::fs::File` in the Rust stdlib.
+    fclose(static_cast<FILE *>(h));
 }
 
 static void io_handle_foreach(void * /* mod */, b_obj_arg /* fn */) {
@@ -150,6 +159,7 @@ static FILE * io_get_handle(lean_object * hfile) {
 
 extern "C" LEAN_EXPORT obj_res lean_decode_io_error(int errnum, b_obj_arg fname) {
     object * details = mk_string(strerror(errnum));
+    // Keep in sync with lean_decode_uv_error below
     switch (errnum) {
     case EINTR:
         lean_assert(fname != nullptr);
@@ -244,6 +254,113 @@ extern "C" LEAN_EXPORT obj_res lean_decode_io_error(int errnum, b_obj_arg fname)
     }
 }
 
+extern "C" LEAN_EXPORT obj_res lean_decode_uv_error(int errnum, b_obj_arg fname) {
+    object * details = mk_string(uv_strerror(errnum));
+    // Keep in sync with lean_decode_io_error above
+    switch (errnum) {
+    case UV_EINTR:
+        lean_assert(fname != nullptr);
+        inc_ref(fname);
+        return lean_mk_io_error_interrupted(fname, errnum, details);
+    /* LibUV does not map EDOM, ENOEXEC and ENOSTR as of version 1.48.0 */
+    case UV_ELOOP: case UV_ENAMETOOLONG: case UV_EDESTADDRREQ:
+    case UV_EBADF: case UV_EINVAL: case UV_EILSEQ:
+    case UV_ENOTCONN: case UV_ENOTSOCK:
+        if (fname == nullptr) {
+            return lean_mk_io_error_invalid_argument(errnum, details);
+        } else {
+            inc_ref(fname);
+            return lean_mk_io_error_invalid_argument_file(fname, errnum, details);
+        }
+    case UV_ENOENT:
+        lean_assert(fname != nullptr);
+        inc_ref(fname);
+        return lean_mk_io_error_no_file_or_directory(fname, errnum, details);
+    case UV_EACCES: case UV_EROFS: case UV_ECONNABORTED: case UV_EFBIG:
+    case UV_EPERM:
+        if (fname == nullptr) {
+            return lean_mk_io_error_permission_denied(errnum, details);
+        } else {
+            inc_ref(fname);
+            return lean_mk_io_error_permission_denied_file(fname, errnum, details);
+        }
+    /* LibUV does not map ENOLCK and ENOSR as of version 1.48.0 */
+    case UV_EMFILE: case UV_ENFILE: case UV_ENOSPC:
+    case UV_E2BIG:  case UV_EAGAIN: case UV_EMLINK:
+    case UV_EMSGSIZE: case UV_ENOBUFS:
+    case UV_ENOMEM:
+        if (fname == nullptr) {
+            return lean_mk_io_error_resource_exhausted(errnum, details);
+        } else {
+            inc_ref(fname);
+            return lean_mk_io_error_resource_exhausted_file(fname, errnum, details);
+        }
+    /* LibUV does not map EBADMSG as of version 1.48.0 */
+    case UV_EISDIR: case UV_ENOTDIR:
+        if (fname == nullptr) {
+            return lean_mk_io_error_inappropriate_type(errnum, details);
+        } else {
+            inc_ref(fname);
+            return lean_mk_io_error_inappropriate_type_file(fname, errnum, details);
+        }
+    /* LibUV does not map ECHILD as of version 1.48.0 */
+    case UV_ENXIO: case UV_EHOSTUNREACH: case UV_ENETUNREACH:
+    case UV_ECONNREFUSED:
+#if UV_VERSION_HEX >= 0x014500
+    case UV_ENODATA:
+#endif
+    case UV_ESRCH:
+        if (fname == nullptr) {
+            return lean_mk_io_error_no_such_thing(errnum, details);
+        } else {
+            inc_ref(fname);
+            return lean_mk_io_error_no_such_thing_file(fname, errnum, details);
+        }
+    /* LibUV does not map EINPROGRESS as of version 1.48.0 */
+    case UV_EEXIST: case UV_EISCONN:
+        if (fname == nullptr) {
+            return lean_mk_io_error_already_exists(errnum, details);
+        } else {
+            inc_ref(fname);
+            return lean_mk_io_error_already_exists_file(fname, errnum, details);
+        }
+    case UV_EIO:
+        lean_assert(fname == nullptr);
+        return lean_mk_io_error_hardware_fault(errnum, details);
+    case UV_ENOTEMPTY:
+        lean_assert(fname == nullptr);
+        return lean_mk_io_error_unsatisfied_constraints(errnum, details);
+    case UV_ENOTTY:
+        lean_assert(fname == nullptr);
+        return lean_mk_io_error_illegal_operation(errnum, details);
+    /* LibUV does not map EIDRM, ENETRESET and ENOLINK as of version 1.48.0 */
+    case UV_ECONNRESET: case UV_ENETDOWN:
+    case UV_EPIPE:
+        lean_assert(fname == nullptr);
+        return lean_mk_io_error_resource_vanished(errnum, details);
+    case UV_EPROTO: case UV_EPROTONOSUPPORT: case UV_EPROTOTYPE:
+        lean_assert(fname == nullptr);
+        return lean_mk_io_error_protocol_error(errnum, details);
+    /* LibUV does not map ETIME as of version 1.48.0 */
+    case UV_ETIMEDOUT:
+        lean_assert(fname == nullptr);
+        return lean_mk_io_error_time_expired(errnum, details);
+    /* LibUV does not map EDEADLK as of version 1.48.0 */
+    case UV_EADDRINUSE: case UV_EBUSY: case UV_ETXTBSY:
+        lean_assert(fname == nullptr);
+        return lean_mk_io_error_resource_busy(errnum, details);
+    case UV_EADDRNOTAVAIL: case UV_EAFNOSUPPORT: case UV_ENODEV:
+    case UV_ENOPROTOOPT: case UV_ENOSYS: case UV_ENOTSUP:
+    case UV_ERANGE: case UV_ESPIPE: case UV_EXDEV:
+        lean_assert(fname == nullptr);
+        return lean_mk_io_error_unsupported_operation(errnum, details);
+    case UV_EFAULT:
+    default:
+        lean_assert(fname == nullptr);
+        return lean_mk_io_error_other_error(errnum, details);
+    }
+}
+
 /* IO.setAccessRights (filename : @& String) (mode : UInt32) : IO Handle */
 extern "C" LEAN_EXPORT obj_res lean_chmod (b_obj_arg filename, uint32_t mode, obj_arg /* w */) {
     if (!chmod(lean_string_cstr(filename), mode)) {
@@ -292,16 +409,156 @@ extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_mk(b_obj_arg filename, uint8 
     }
 }
 
+#ifdef LEAN_WINDOWS
+
+static inline HANDLE win_handle(FILE * fp) {
+    return (HANDLE)_get_osfhandle(_fileno(fp));
+}
+
+/* Handle.lock : (@& Handle) → (exclusive : Bool) → IO Unit */
+extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_lock(b_obj_arg h, uint8_t x, obj_arg /* w */) {
+    OVERLAPPED o = {0};
+    HANDLE wh = win_handle(io_get_handle(h));
+    DWORD flags = x ? LOCKFILE_EXCLUSIVE_LOCK : 0;
+    if (LockFileEx(wh, flags, 0, MAXDWORD, MAXDWORD, &o)) {
+        return io_result_mk_ok(box(0));
+    } else {
+        return io_result_mk_error((sstream() << GetLastError()).str());
+    }
+}
+
+/* Handle.tryLock : (@& Handle) → (exclusive : Bool) → IO Bool */
+extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_try_lock(b_obj_arg h, uint8_t x, obj_arg /* w */) {
+    OVERLAPPED o = {0};
+    HANDLE wh = win_handle(io_get_handle(h));
+    DWORD flags = (x ? LOCKFILE_EXCLUSIVE_LOCK : 0) | LOCKFILE_FAIL_IMMEDIATELY;
+    if (LockFileEx(wh, flags, 0, MAXDWORD, MAXDWORD, &o)) {
+        return io_result_mk_ok(box(1));
+    } else {
+        if (GetLastError() == ERROR_LOCK_VIOLATION) {
+            return io_result_mk_ok(box(0));
+        } else {
+            return io_result_mk_error((sstream() << GetLastError()).str());
+        }
+    }
+}
+
+/* Handle.unlock : (@& Handle) → IO Unit */
+extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_unlock(b_obj_arg h, obj_arg /* w */) {
+    OVERLAPPED o = {0};
+    HANDLE wh = win_handle(io_get_handle(h));
+    if (UnlockFileEx(wh, 0, MAXDWORD, MAXDWORD, &o)) {
+        return io_result_mk_ok(box(0));
+    } else {
+        if (GetLastError() == ERROR_NOT_LOCKED) {
+            // For consistency with Unix
+            return io_result_mk_ok(box(0));
+        } else {
+            return io_result_mk_error((sstream() << GetLastError()).str());
+        }
+    }
+}
+
+#else
+
+/* Handle.lock : (@& Handle) → (exclusive : Bool) → IO Unit */
+extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_lock(b_obj_arg h,  uint8_t x, obj_arg /* w */) {
+    FILE * fp = io_get_handle(h);
+    if (!flock(fileno(fp), x ? LOCK_EX : LOCK_SH)) {
+        return io_result_mk_ok(box(0));
+    } else {
+        return io_result_mk_error(decode_io_error(errno, nullptr));
+    }
+}
+
+/* Handle.tryLock : (@& Handle) → (exclusive : Bool) → IO Bool */
+extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_try_lock(b_obj_arg h, uint8_t x, obj_arg /* w */) {
+    FILE * fp = io_get_handle(h);
+    if (!flock(fileno(fp), (x ? LOCK_EX : LOCK_SH) | LOCK_NB)) {
+        return io_result_mk_ok(box(1));
+    } else {
+        if (errno == EWOULDBLOCK) {
+            return io_result_mk_ok(box(0));
+        } else {
+            return io_result_mk_error(decode_io_error(errno, nullptr));
+        }
+    }
+}
+
+/* Handle.unlock : (@& Handle) → IO Unit */
+extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_unlock(b_obj_arg h, obj_arg /* w */) {
+    FILE * fp = io_get_handle(h);
+    if (!flock(fileno(fp), LOCK_UN)) {
+        return io_result_mk_ok(box(0));
+    } else {
+        return io_result_mk_error(decode_io_error(errno, nullptr));
+    }
+}
+
+#endif
+
+/* Handle.isTty : (@& Handle) → BaseIO Bool */
+extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_is_tty(b_obj_arg h, obj_arg /* w */) {
+    FILE * fp = io_get_handle(h);
+#ifdef LEAN_WINDOWS
+    /*
+    On Windows, there are two approaches for detecting a console.
+    1)  _isatty(_fileno(fp)) != 0
+        This checks whether the file descriptor is a *character device*,
+        not just a terminal (unlike Unix's isatty). Thus, it produces a false
+        positive in some edge cases (such as NUL).
+        https://stackoverflow.com/q/3648711
+    2)  GetConsoleMode(win_handle(fp), &mode) != 0
+        Errors if the handle is not a console. Unfortunately, this produces
+        a false negative for a terminal emulator like MSYS/Cygwin's Mintty,
+        which is not implemented as a Windows-recognized console on
+        old Windows versions (e.g., pre-Windows 10, pre-ConPTY).
+        https://github.com/msys2/MINGW-packages/issues/14087
+    We choose to use GetConsoleMode as that seems like the more modern approach,
+    and Lean does not support pre-Windows 10.
+    */
+    DWORD mode;
+    return io_result_mk_ok(box(GetConsoleMode(win_handle(fp), &mode) != 0));
+#else
+    // We ignore errors for consistency with Windows.
+    return io_result_mk_ok(box(isatty(fileno(fp))));
+#endif
+}
+
 /* Handle.isEof : (@& Handle) → BaseIO Bool */
 extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_is_eof(b_obj_arg h, obj_arg /* w */) {
     FILE * fp = io_get_handle(h);
     return io_result_mk_ok(box(std::feof(fp) != 0));
 }
 
-/* Handle.flush : (@& Handle) → IO Bool */
+/* Handle.flush : (@& Handle) → IO Unit */
 extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_flush(b_obj_arg h, obj_arg /* w */) {
     FILE * fp = io_get_handle(h);
     if (!std::fflush(fp)) {
+        return io_result_mk_ok(box(0));
+    } else {
+        return io_result_mk_error(decode_io_error(errno, nullptr));
+    }
+}
+
+/* Handle.rewind : (@& Handle) → IO Unit */
+extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_rewind(b_obj_arg h, obj_arg /* w */) {
+    FILE * fp = io_get_handle(h);
+    if (!std::fseek(fp, 0, SEEK_SET)) {
+        return io_result_mk_ok(box(0));
+    } else {
+        return io_result_mk_error(decode_io_error(errno, nullptr));
+    }
+}
+
+/* Handle.truncate : (@& Handle) → IO Unit */
+extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_truncate(b_obj_arg h, obj_arg /* w */) {
+    FILE * fp = io_get_handle(h);
+#ifdef LEAN_WINDOWS
+    if (!_chsize_s(_fileno(fp), _ftelli64(fp))) {
+#else
+    if (!ftruncate(fileno(fp), ftello(fp))) {
+#endif
         return io_result_mk_ok(box(0));
     } else {
         return io_result_mk_error(decode_io_error(errno, nullptr));
@@ -338,52 +595,215 @@ extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_write(b_obj_arg h, b_obj_arg 
     }
 }
 
-/*
-  Handle.getLine : (@& Handle) → IO Unit
-  The line returned by `lean_io_prim_handle_get_line`
-  is truncated at the first '\0' character and the
-  rest of the line is discarded. */
+/* Handle.getLine : (@& Handle) → IO Unit */
 extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_get_line(b_obj_arg h, obj_arg /* w */) {
     FILE * fp = io_get_handle(h);
-    const int buf_sz = 64;
-    char buf_str[buf_sz]; // NOLINT
+
     std::string result;
-    bool first = true;
-    while (true) {
-        char * out = std::fgets(buf_str, buf_sz, fp);
-        if (out != nullptr) {
-            if (strlen(buf_str) < buf_sz-1 || buf_str[buf_sz-2] == '\n') {
-                if (first) {
-                    return io_result_mk_ok(mk_string(out));
-                } else {
-                    result.append(out);
-                    return io_result_mk_ok(mk_string(result));
-                }
-            }
-            result.append(out);
-        } else if (std::feof(fp)) {
-            clearerr(fp);
-            return io_result_mk_ok(mk_string(result));
-        } else {
-            return io_result_mk_error(decode_io_error(errno, nullptr));
+    int c; // Note: int, not char, required to handle EOF
+    while ((c = std::fgetc(fp)) != EOF) {
+        result.push_back(c);
+        if (c == '\n') {
+            break;
         }
-        first = false;
+    }
+
+    if (std::ferror(fp)) {
+        return io_result_mk_error(decode_io_error(errno, nullptr));
+    } else if (std::feof(fp)) {
+        clearerr(fp);
+        return io_result_mk_ok(mk_string(result));
+    } else {
+        obj_res ret = io_result_mk_ok(mk_string(result));
+        return ret;
     }
 }
 
 /* Handle.putStr : (@& Handle) → (@& String) → IO Unit */
 extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_put_str(b_obj_arg h, b_obj_arg s, obj_arg /* w */) {
     FILE * fp = io_get_handle(h);
-    if (std::fputs(lean_string_cstr(s), fp) != EOF) {
+    usize n = lean_string_size(s) - 1; // - 1 to ignore the terminal NULL byte.
+    usize m = std::fwrite(lean_string_cstr(s), 1, n, fp);
+    if (m == n) {
         return io_result_mk_ok(box(0));
     } else {
         return io_result_mk_error(decode_io_error(errno, nullptr));
     }
 }
 
+/* Std.Time.Timestamp.now : IO Timestamp */
+extern "C" LEAN_EXPORT obj_res lean_get_current_time(obj_arg /* w */) {
+    using namespace std::chrono;
+
+    std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
+    long long timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+
+    long long secs = timestamp / 1000000000;
+    long long nano = timestamp % 1000000000;
+
+    lean_object *lean_ts = lean_alloc_ctor(0, 2, 0);
+    lean_ctor_set(lean_ts, 0, lean_int64_to_int(secs));
+    lean_ctor_set(lean_ts, 1, lean_int64_to_int(nano));
+
+    return lean_io_result_mk_ok(lean_ts);
+}
+
+/* Std.Time.Database.Windows.getNextTransition : @&String -> Int64 -> Bool -> IO (Option (Int64 × TimeZone)) */
+extern "C" LEAN_EXPORT obj_res lean_windows_get_next_transition(b_obj_arg timezone_str, uint64_t tm_obj, uint8 default_time, obj_arg /* w */) {
+#if defined(LEAN_WINDOWS)
+    UErrorCode status = U_ZERO_ERROR;
+    const char* dst_name_id = lean_string_cstr(timezone_str);
+
+    UChar tzID[256];
+    u_strFromUTF8(tzID, sizeof(tzID) / sizeof(tzID[0]), NULL, dst_name_id, strlen(dst_name_id), &status);
+
+    if (U_FAILURE(status)) {
+        return lean_io_result_mk_error(lean_decode_io_error(EINVAL, mk_string("failed to read identifier")));
+    }
+
+    UCalendar *cal = ucal_open(tzID, -1, NULL, UCAL_GREGORIAN, &status);
+
+    if (U_FAILURE(status)) {
+        ucal_close(cal);
+        return lean_io_result_mk_error(lean_decode_io_error(EINVAL, mk_string("failed to open calendar")));
+    }
+
+    int64_t tm = 0;
+
+    if (!default_time) {
+        int64_t timestamp_secs = (int64_t)tm_obj;
+
+        ucal_setMillis(cal, timestamp_secs * 1000, &status);
+        if (U_FAILURE(status)) {
+            ucal_close(cal);
+            return lean_io_result_mk_error(lean_decode_io_error(EINVAL, mk_string("failed to set calendar time")));
+        }
+
+        UDate nextTransition;
+        if (!ucal_getTimeZoneTransitionDate(cal, UCAL_TZ_TRANSITION_NEXT, &nextTransition, &status)) {
+            ucal_close(cal);
+            return io_result_mk_ok(mk_option_none());
+        }
+
+        if (U_FAILURE(status)) {
+            ucal_close(cal);
+            return lean_io_result_mk_error(lean_decode_io_error(EINVAL, mk_string("failed to get next transation")));
+        }
+
+        tm = (int64_t)(nextTransition / 1000.0);
+    }
+
+    int32_t dst_offset = ucal_get(cal, UCAL_DST_OFFSET, &status);
+
+    if (U_FAILURE(status)) {
+        ucal_close(cal);
+        return lean_io_result_mk_error(lean_decode_io_error(EINVAL, mk_string("failed to get dst_offset")));
+    }
+
+    int is_dst = dst_offset != 0;
+
+    int32_t tzIDLength = ucal_getTimeZoneDisplayName(cal, is_dst ? UCAL_DST : UCAL_STANDARD, "en_US", tzID, 32, &status);
+
+    if (U_FAILURE(status)) {
+        ucal_close(cal);
+        return lean_io_result_mk_error(lean_decode_io_error(EINVAL, mk_string("failed to timezone identifier")));
+    }
+
+    char dst_name[256];
+    int32_t dst_name_len;
+    u_strToUTF8(dst_name, sizeof(dst_name), &dst_name_len, tzID, tzIDLength, &status);
+
+    if (U_FAILURE(status)) {
+        return lean_io_result_mk_error(lean_decode_io_error(EINVAL, mk_string("failed to convert DST name to UTF-8")));
+    }
+
+    UChar display_name[32];
+    int32_t display_name_len = ucal_getTimeZoneDisplayName(cal, is_dst ? UCAL_SHORT_DST : UCAL_SHORT_STANDARD, "en_US", display_name, 32, &status);
+
+    if (U_FAILURE(status)) {
+        ucal_close(cal);
+        return lean_io_result_mk_error(lean_decode_io_error(EINVAL, mk_string("failed to read abbreaviation")));
+    }
+
+    char display_name_str[256];
+    int32_t display_name_str_len;
+    u_strToUTF8(display_name_str, sizeof(display_name_str), &display_name_str_len, display_name, display_name_len, &status);
+
+    if (U_FAILURE(status)) {
+        ucal_close(cal);
+        return lean_io_result_mk_error(lean_decode_io_error(EINVAL, mk_string("failed to get abbreviation to cstr")));
+    }
+
+    int32_t zone_offset = ucal_get(cal, UCAL_ZONE_OFFSET, &status);
+    zone_offset += dst_offset;
+
+    if (U_FAILURE(status)) {
+        ucal_close(cal);
+        return lean_io_result_mk_error(lean_decode_io_error(EINVAL, mk_string("failed to get zone_offset")));
+    }
+
+    ucal_close(cal);
+
+    int offset_seconds = zone_offset / 1000;
+
+    lean_object *lean_tz = lean_alloc_ctor(0, 3, 1);
+    lean_ctor_set(lean_tz, 0, lean_int_to_int(offset_seconds));
+    lean_ctor_set(lean_tz, 1, lean_mk_string_from_bytes_unchecked(dst_name, dst_name_len));
+    lean_ctor_set(lean_tz, 2, lean_mk_string_from_bytes_unchecked(display_name_str, display_name_str_len));
+    lean_ctor_set_uint8(lean_tz, sizeof(void*)*3, is_dst);
+
+    lean_object *lean_pair = lean_alloc_ctor(0, 2, 0);
+    lean_ctor_set(lean_pair, 0, lean_box_uint64((uint64_t)tm));
+    lean_ctor_set(lean_pair, 1, lean_tz);
+
+    return lean_io_result_mk_ok(mk_option_some(lean_pair));
+#else
+    return lean_io_result_mk_error(lean_decode_io_error(EINVAL, mk_string("failed to get timezone, its windows only.")));
+#endif
+}
+
+/* Std.Time.Database.Windows.getLocalTimeZoneIdentifierAt : Int64 → IO String */
+extern "C" LEAN_EXPORT obj_res lean_get_windows_local_timezone_id_at(uint64_t tm_obj, obj_arg /* w */) {
+#if defined(LEAN_WINDOWS)
+    UErrorCode status = U_ZERO_ERROR;
+    UCalendar* cal = ucal_open(NULL, -1, NULL, UCAL_GREGORIAN, &status);
+
+    if (U_FAILURE(status)) {
+        return lean_io_result_mk_error(lean_decode_io_error(EINVAL, mk_string("failed to open calendar")));
+    }
+
+    int64_t timestamp_secs = (int64_t)tm_obj;
+    ucal_setMillis(cal, timestamp_secs * 1000, &status);
+
+    if (U_FAILURE(status)) {
+        ucal_close(cal);
+        return lean_io_result_mk_error(lean_decode_io_error(EINVAL, mk_string("failed to set calendar time")));
+    }
+
+    UChar tzId[256];
+    int32_t tzIdLength = ucal_getTimeZoneID(cal, tzId, sizeof(tzId) / sizeof(tzId[0]), &status);
+    ucal_close(cal);
+
+    if (U_FAILURE(status)) {
+        return lean_io_result_mk_error(lean_decode_io_error(EINVAL, mk_string("failed to get timezone ID")));
+    }
+
+    char tzIdStr[256];
+    u_strToUTF8(tzIdStr, sizeof(tzIdStr), NULL, tzId, tzIdLength, &status);
+
+    if (U_FAILURE(status)) {
+        return lean_io_result_mk_error(lean_decode_io_error(EINVAL, mk_string("failed to convert timezone ID to UTF-8")));
+    }
+
+    return lean_io_result_mk_ok(lean_mk_ascii_string_unchecked(tzIdStr));
+#else
+    return lean_io_result_mk_error(lean_decode_io_error(EINVAL, mk_string("timezone retrieval is Windows-only")));
+#endif
+}
+
 /* monoMsNow : BaseIO Nat */
 extern "C" LEAN_EXPORT obj_res lean_io_mono_ms_now(obj_arg /* w */) {
-    static_assert(sizeof(std::chrono::milliseconds::rep) <= sizeof(uint64));
+    static_assert(sizeof(std::chrono::milliseconds::rep) <= sizeof(uint64), "size of std::chrono::nanoseconds::rep may not exceed 64");
     auto now = std::chrono::steady_clock::now();
     auto tm = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch());
     return io_result_mk_ok(uint64_to_nat(tm.count()));
@@ -391,7 +811,7 @@ extern "C" LEAN_EXPORT obj_res lean_io_mono_ms_now(obj_arg /* w */) {
 
 /* monoNanosNow : BaseIO Nat */
 extern "C" LEAN_EXPORT obj_res lean_io_mono_nanos_now(obj_arg /* w */) {
-    static_assert(sizeof(std::chrono::nanoseconds::rep) <= sizeof(uint64));
+    static_assert(sizeof(std::chrono::nanoseconds::rep) <= sizeof(uint64), "size of std::chrono::nanoseconds::rep may not exceed 64");
     auto now = std::chrono::steady_clock::now();
     auto tm = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch());
     return io_result_mk_ok(uint64_to_nat(tm.count()));
@@ -406,7 +826,7 @@ extern "C" LEAN_EXPORT obj_res lean_io_get_random_bytes (size_t nbytes, obj_arg 
 #if !defined(LEAN_WINDOWS)
     int fd_urandom = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
     if (fd_urandom < 0) {
-        return io_result_mk_error(decode_io_error(errno, lean_mk_string("/dev/urandom")));
+        return io_result_mk_error(decode_io_error(errno, lean_mk_ascii_string_unchecked("/dev/urandom")));
     }
 #endif
 
@@ -433,7 +853,7 @@ extern "C" LEAN_EXPORT obj_res lean_io_get_random_bytes (size_t nbytes, obj_arg 
 #else
     #if defined(LEAN_EMSCRIPTEN)
         // `Crypto.getRandomValues` documents `dest` should be at most 65536 bytes.
-        size_t read_sz = std::min(remain, 65536);
+        size_t read_sz = std::min(remain, static_cast<size_t>(65536));
     #else
         size_t read_sz = remain;
     #endif
@@ -490,6 +910,12 @@ extern "C" LEAN_EXPORT obj_res lean_io_allocprof(b_obj_arg msg, obj_arg fn, obj_
 /* getNumHeartbeats : BaseIO Nat */
 extern "C" LEAN_EXPORT obj_res lean_io_get_num_heartbeats(obj_arg /* w */) {
     return io_result_mk_ok(lean_uint64_to_nat(get_num_heartbeats()));
+}
+
+/* addHeartbeats (count : Int64) : BaseIO Unit */
+extern "C" LEAN_EXPORT obj_res lean_io_add_heartbeats(int64_t count, obj_arg /* w */) {
+    add_heartbeats(count);
+    return io_result_mk_ok(box(0));
 }
 
 extern "C" LEAN_EXPORT obj_res lean_io_getenv(b_obj_arg env_var, obj_arg) {
@@ -621,7 +1047,7 @@ extern "C" LEAN_EXPORT obj_res lean_io_metadata(b_obj_arg fname, obj_arg) {
     cnstr_set(mdata, 0, timespec_to_obj(st.st_atimespec));
     cnstr_set(mdata, 1, timespec_to_obj(st.st_mtimespec));
 #elif defined(LEAN_WINDOWS)
-    // TOOD: sub-second precision on Windows
+    // TODO: sub-second precision on Windows
     cnstr_set(mdata, 0, timespec_to_obj(timespec { st.st_atime, 0 }));
     cnstr_set(mdata, 1, timespec_to_obj(timespec { st.st_mtime, 0 }));
 #else
@@ -660,13 +1086,111 @@ extern "C" LEAN_EXPORT obj_res lean_io_remove_dir(b_obj_arg p, obj_arg) {
 }
 
 extern "C" LEAN_EXPORT obj_res lean_io_rename(b_obj_arg from, b_obj_arg to, lean_object * /* w */) {
-    if (std::rename(string_cstr(from), string_cstr(to)) == 0) {
-        return io_result_mk_ok(box(0));
-    } else {
+#ifdef LEAN_WINDOWS
+    // Note: On windows, std::rename gives an error if the `to` file already exists,
+    // so we have to call the underlying windows API directly to get behavior consistent
+    // with the unix-like OSs
+    bool ok = MoveFileEx(string_cstr(from), string_cstr(to), MOVEFILE_REPLACE_EXISTING) != 0;
+    if (!ok) {
+        // TODO: actually produce the right type of IO error
+        return io_result_mk_error((sstream()
+            << "failed to rename '" << string_cstr(from) << "' to '" << string_cstr(to) << "': " << GetLastError()).str());
+    }
+#else
+    bool ok = std::rename(string_cstr(from), string_cstr(to)) == 0;
+    if (!ok) {
         std::ostringstream s;
         s << string_cstr(from) << " and/or " << string_cstr(to);
         object_ref out{mk_string(s.str())};
         return io_result_mk_error(decode_io_error(errno, out.raw()));
+    }
+#endif
+    return io_result_mk_ok(box(0));
+}
+
+/* createTempFile : IO (Handle × FilePath) */
+extern "C" LEAN_EXPORT obj_res lean_io_create_tempfile(lean_object * /* w */) {
+    char path[PATH_MAX];
+    size_t base_len = PATH_MAX;
+    int ret = uv_os_tmpdir(path, &base_len);
+    if (ret < 0) {
+        return io_result_mk_error(decode_uv_error(ret, nullptr));
+    } else if (base_len == 0) {
+        return lean_io_result_mk_error(decode_uv_error(UV_ENOENT, mk_string("")));
+    }
+
+#if defined(LEAN_WINDOWS)
+    // On Windows `GetTempPathW` always returns a path ending in \, but libuv removes it.
+    // https://learn.microsoft.com/en-us/windows/win32/fileio/creating-and-using-a-temporary-file
+    if (path[base_len - 1] != '\\') {
+        lean_always_assert(PATH_MAX >= base_len + 1 + 1);
+        strcat(path, "\\");
+    }
+#else
+    // No guarantee that we have a trailing / in TMPDIR.
+    if (path[base_len - 1] != '/') {
+        lean_always_assert(PATH_MAX >= base_len + 1 + 1);
+        strcat(path, "/");
+    }
+#endif
+
+    const char* file_pattern = "tmp.XXXXXXXX";
+    const size_t file_pattern_size = strlen(file_pattern);
+    lean_always_assert(PATH_MAX >= strlen(path) + file_pattern_size + 1);
+    strcat(path, file_pattern);
+
+    uv_fs_t req;
+    // Differences from lean_io_create_tempdir start here
+    ret = uv_fs_mkstemp(NULL, &req, path, NULL);
+    if (ret < 0) {
+        // If mkstemp throws an error we cannot rely on path to contain a proper file name.
+        return io_result_mk_error(decode_uv_error(ret, nullptr));
+    } else {
+        FILE* handle = fdopen(req.result, "r+");
+        object_ref pair = mk_cnstr(0, io_wrap_handle(handle), mk_string(req.path));
+        return lean_io_result_mk_ok(pair.steal());
+    }
+}
+
+/* createTempDir : IO FilePath */
+extern "C" LEAN_EXPORT obj_res lean_io_create_tempdir(lean_object * /* w */) {
+    char path[PATH_MAX];
+    size_t base_len = PATH_MAX;
+    int ret = uv_os_tmpdir(path, &base_len);
+    if (ret < 0) {
+        return io_result_mk_error(decode_uv_error(ret, nullptr));
+    } else if (base_len == 0) {
+        return lean_io_result_mk_error(decode_uv_error(UV_ENOENT, mk_string("")));
+    }
+
+#if defined(LEAN_WINDOWS)
+    // On Windows `GetTempPathW` always returns a path ending in \, but libuv removes it.
+    // https://learn.microsoft.com/en-us/windows/win32/fileio/creating-and-using-a-temporary-file
+    if (path[base_len - 1] != '\\') {
+        lean_always_assert(PATH_MAX >= base_len + 1 + 1);
+        strcat(path, "\\");
+    }
+#else
+    // No guarantee that we have a trailing / in TMPDIR.
+    if (path[base_len - 1] != '/') {
+        lean_always_assert(PATH_MAX >= base_len + 1 + 1);
+        strcat(path, "/");
+    }
+#endif
+
+    const char* file_pattern = "tmp.XXXXXXXX";
+    const size_t file_pattern_size = strlen(file_pattern);
+    lean_always_assert(PATH_MAX >= strlen(path) + file_pattern_size + 1);
+    strcat(path, file_pattern);
+
+    uv_fs_t req;
+    // Differences from lean_io_create_tempfile start here
+    ret = uv_fs_mkdtemp(NULL, &req, path, NULL);
+    if (ret < 0) {
+        // If mkdtemp throws an error we cannot rely on path to contain a proper file name.
+        return io_result_mk_error(decode_uv_error(ret, nullptr));
+    } else {
+        return lean_io_result_mk_ok(mk_string(req.path));
     }
 }
 
@@ -680,11 +1204,10 @@ extern "C" LEAN_EXPORT obj_res lean_io_remove_file(b_obj_arg fname, obj_arg) {
 
 extern "C" LEAN_EXPORT obj_res lean_io_app_path(obj_arg) {
 #if defined(LEAN_WINDOWS)
-    HMODULE hModule = GetModuleHandleW(NULL);
-    WCHAR path[MAX_PATH];
-    GetModuleFileNameW(hModule, path, MAX_PATH);
-    std::wstring pathwstr(path);
-    std::string pathstr(pathwstr.begin(), pathwstr.end());
+    HMODULE hModule = GetModuleHandle(NULL);
+    char path[MAX_PATH];
+    GetModuleFileName(hModule, path, MAX_PATH);
+    std::string pathstr(path);
     // Hack for making sure disk is lower case
     // TODO(Leo): more robust solution
     if (pathstr.size() >= 2 && pathstr[1] == ':') {
@@ -881,19 +1404,21 @@ static obj_res lean_io_bind_task_fn(obj_arg f, obj_arg a) {
     return object_ref(io_result_get_value(r.raw()), true).steal();
 }
 
-/*  mapTask {α : Type u} {β : Type} (f : α → BaseIO β) (t : Task α) (prio : Nat) : BaseIO (Task β) */
-extern "C" LEAN_EXPORT obj_res lean_io_map_task(obj_arg f, obj_arg t, obj_arg prio, obj_arg) {
+/*  mapTask (f : α → BaseIO β) (t : Task α) (prio : Nat) (sync : Bool) : BaseIO (Task β) */
+extern "C" LEAN_EXPORT obj_res lean_io_map_task(obj_arg f, obj_arg t, obj_arg prio, uint8 sync,
+        obj_arg) {
     object * c = lean_alloc_closure((void*)lean_io_bind_task_fn, 2, 1);
     lean_closure_set(c, 0, f);
-    object * t2 = lean_task_map_core(c, t, lean_unbox(prio), /* keep_alive */ true);
+    object * t2 = lean_task_map_core(c, t, lean_unbox(prio), sync, /* keep_alive */ true);
     return io_result_mk_ok(t2);
 }
 
-/*  bindTask {α : Type u} {β : Type} (t : Task α) (f : α → BaseIO (Task β)) (prio : Nat) : BaseIO (Task β) */
-extern "C" LEAN_EXPORT obj_res lean_io_bind_task(obj_arg t, obj_arg f, obj_arg prio, obj_arg) {
+/*  bindTask (t : Task α) (f : α → BaseIO (Task β)) (prio : Nat) (sync : Bool) : BaseIO (Task β) */
+extern "C" LEAN_EXPORT obj_res lean_io_bind_task(obj_arg t, obj_arg f, obj_arg prio, uint8 sync,
+        obj_arg) {
     object * c = lean_alloc_closure((void*)lean_io_bind_task_fn, 2, 1);
     lean_closure_set(c, 0, f);
-    object * t2 = lean_task_bind_core(t, c, lean_unbox(prio), /* keep_alive */ true);
+    object * t2 = lean_task_bind_core(t, c, lean_unbox(prio), sync, /* keep_alive */ true);
     return io_result_mk_ok(t2);
 }
 
@@ -906,8 +1431,8 @@ extern "C" LEAN_EXPORT obj_res lean_io_cancel(b_obj_arg t, obj_arg) {
     return io_result_mk_ok(box(0));
 }
 
-extern "C" LEAN_EXPORT obj_res lean_io_has_finished(b_obj_arg t, obj_arg) {
-    return io_result_mk_ok(box(lean_io_has_finished_core(t)));
+extern "C" LEAN_EXPORT obj_res lean_io_get_task_state(b_obj_arg t, obj_arg) {
+    return io_result_mk_ok(box(lean_io_get_task_state_core(t)));
 }
 
 extern "C" LEAN_EXPORT obj_res lean_io_wait(obj_arg t, obj_arg) {
@@ -925,8 +1450,22 @@ extern "C" LEAN_EXPORT obj_res lean_io_exit(uint8_t code, obj_arg /* w */) {
     exit(code);
 }
 
+extern "C" LEAN_EXPORT obj_res lean_runtime_mark_multi_threaded(obj_arg a, obj_arg /* w */) {
+    lean_mark_mt(a);
+    return io_result_mk_ok(a);
+}
+
+extern "C" LEAN_EXPORT obj_res lean_runtime_mark_persistent(obj_arg a, obj_arg /* w */) {
+    lean_mark_persistent(a);
+    return io_result_mk_ok(a);
+}
+
+extern "C" LEAN_EXPORT obj_res lean_runtime_forget(obj_arg /* a */, obj_arg /* w */) {
+    return io_result_mk_ok(box(0));
+}
+
 void initialize_io() {
-    g_io_error_nullptr_read = lean_mk_io_user_error(mk_string("null reference read"));
+    g_io_error_nullptr_read = lean_mk_io_user_error(mk_ascii_string_unchecked("null reference read"));
     mark_persistent(g_io_error_nullptr_read);
     g_io_handle_external_class = lean_register_external_class(io_handle_finalizer, io_handle_foreach);
 #if defined(LEAN_WINDOWS)

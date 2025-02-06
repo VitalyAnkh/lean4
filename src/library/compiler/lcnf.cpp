@@ -37,6 +37,7 @@ bool is_do_notation_joinpoint(name const & n) {
 
 class to_lcnf_fn {
     typedef rb_expr_map<expr> cache;
+    elab_environment    m_env;
     type_checker::state m_st;
     local_ctx           m_lctx;
     cache               m_cache;
@@ -44,10 +45,10 @@ class to_lcnf_fn {
     name                m_x;
     unsigned            m_next_idx{1};
 public:
-    to_lcnf_fn(environment const & env, local_ctx const & lctx):
-        m_st(env), m_lctx(lctx), m_x("_x") {}
+    to_lcnf_fn(elab_environment const & env, local_ctx const & lctx):
+        m_env(env), m_st(env), m_lctx(lctx), m_x("_x") {}
 
-    environment & env() { return m_st.env(); }
+    elab_environment & env() { return m_env; }
 
     name_generator & ngen() { return m_st.ngen(); }
 
@@ -266,6 +267,23 @@ public:
             return e;
     }
 
+    unsigned get_constructor_non_prop_nfields(name ctor, unsigned nparams) {
+        local_ctx lctx;
+        expr type = env().get(ctor).get_type();
+        for (unsigned i = 0; i < nparams; i++) {
+            lean_assert(is_pi(type));
+            expr local = lctx.mk_local_decl(ngen(), binding_name(type), binding_domain(type), binding_info(type));
+            type = instantiate(binding_body(type), local);
+        }
+        unsigned nfields = 0;
+        while (is_pi(type)) {
+            if (!type_checker(m_st, lctx).is_prop(binding_domain(type))) nfields++;
+            expr local = lctx.mk_local_decl(ngen(), binding_name(type), binding_domain(type), binding_info(type));
+            type = instantiate(binding_body(type), local);
+        }
+        return nfields;
+    }
+
     expr visit_no_confusion(expr const & fn, buffer<expr> & args, bool root) {
         name const & no_confusion_name  = const_name(fn);
         name const & I_name             = no_confusion_name.get_prefix();
@@ -297,7 +315,7 @@ public:
             lean_assert(args.size() >= basic_arity + 1);
             unsigned major_idx = basic_arity;
             expr major         = args[major_idx];
-            unsigned nfields   = get_constructor_nfields(*lhs_constructor);
+            unsigned nfields   = get_constructor_non_prop_nfields(*lhs_constructor, nparams);
             while (nfields > 0) {
                 if (!is_lambda(major))
                     major = eta_expand(major, nfields);
@@ -620,7 +638,7 @@ public:
     }
 };
 
-expr to_lcnf_core(environment const & env, local_ctx const & lctx, expr const & e) {
+expr to_lcnf_core(elab_environment const & env, local_ctx const & lctx, expr const & e) {
     expr new_e = unfold_macro_defs(env, e);
     return to_lcnf_fn(env, lctx)(new_e);
 }

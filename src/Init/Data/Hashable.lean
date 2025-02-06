@@ -22,6 +22,12 @@ instance : Hashable Bool where
     | true  => 11
     | false => 13
 
+instance : Hashable PEmpty.{u} where
+  hash x := nomatch x
+
+instance : Hashable PUnit.{u} where
+  hash | .unit => 11
+
 instance [Hashable α] : Hashable (Option α) where
   hash
     | none   => 11
@@ -48,8 +54,14 @@ instance : Hashable UInt64 where
 instance : Hashable USize where
   hash n := n.toUInt64
 
+instance : Hashable ByteArray where
+  hash as := as.foldl (fun r a => mixHash r (hash a)) 7
+
 instance : Hashable (Fin n) where
   hash v := v.val.toUInt64
+
+instance : Hashable Char where
+  hash c := c.val.toUInt64
 
 instance : Hashable Int where
   hash
@@ -62,3 +74,16 @@ instance (P : Prop) : Hashable P where
 /-- An opaque (low-level) hash operation used to implement hashing for pointers. -/
 @[always_inline, inline] def hash64 (u : UInt64) : UInt64 :=
   mixHash u 11
+
+/-- `LawfulHashable α` says that the `BEq α` and `Hashable α` instances on `α` are compatible, i.e.,
+that `a == b` implies `hash a = hash b`. This is automatic if the `BEq` instance is lawful.
+-/
+class LawfulHashable (α : Type u) [BEq α] [Hashable α] where
+  /-- If `a == b`, then `hash a = hash b`. -/
+  hash_eq (a b : α) : a == b → hash a = hash b
+
+theorem hash_eq [BEq α] [Hashable α] [LawfulHashable α] {a b : α} : a == b → hash a = hash b :=
+  LawfulHashable.hash_eq a b
+
+instance (priority := low) [BEq α] [Hashable α] [LawfulBEq α] : LawfulHashable α where
+  hash_eq _ _ h := eq_of_beq h ▸ rfl

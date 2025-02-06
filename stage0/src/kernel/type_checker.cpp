@@ -30,10 +30,16 @@ static expr * g_nat_add      = nullptr;
 static expr * g_nat_sub      = nullptr;
 static expr * g_nat_mul      = nullptr;
 static expr * g_nat_pow      = nullptr;
+static expr * g_nat_gcd      = nullptr;
 static expr * g_nat_mod      = nullptr;
 static expr * g_nat_div      = nullptr;
 static expr * g_nat_beq      = nullptr;
 static expr * g_nat_ble      = nullptr;
+static expr * g_nat_land     = nullptr;
+static expr * g_nat_lor      = nullptr;
+static expr * g_nat_xor      = nullptr;
+static expr * g_nat_shiftLeft  = nullptr;
+static expr * g_nat_shiftRight = nullptr;
 
 type_checker::state::state(environment const & env):
     m_env(env), m_ngen(*g_kernel_fresh) {}
@@ -179,7 +185,7 @@ expr type_checker::infer_app(expr const & e, bool infer_only) {
 
 static void mark_used(unsigned n, expr const * fvars, expr const & b, bool * used) {
     if (!has_fvar(b)) return;
-    for_each(b, [&](expr const & x, unsigned) {
+    for_each(b, [&](expr const & x) {
             if (!has_fvar(x)) return false;
             if (is_fvar(x)) {
                 for (unsigned i = 0; i < n; i++) {
@@ -286,7 +292,7 @@ expr type_checker::infer_type_core(expr const & e, bool infer_only) {
         throw kernel_exception(env(), "type checker does not support loose bound variables, replace them with free variables before invoking it");
 
     lean_assert(!has_loose_bvars(e));
-    check_system("type checker");
+    check_system("type checker", /* do_check_interrupted */ true);
 
     auto it = m_st->m_infer_type[infer_only].find(e);
     if (it != m_st->m_infer_type[infer_only].end())
@@ -370,16 +376,8 @@ expr type_checker::whnf_fvar(expr const & e, bool cheap_rec, bool cheap_proj) {
     return e;
 }
 
-/* If `cheap == true`, then we don't perform delta-reduction when reducing major premise. */
-optional<expr> type_checker::reduce_proj(expr const & e, bool cheap_rec, bool cheap_proj) {
-    if (!proj_idx(e).is_small())
-        return none_expr();
-    unsigned idx = proj_idx(e).get_small_value();
-    expr c;
-    if (cheap_proj)
-        c = whnf_core(proj_expr(e), cheap_rec, cheap_proj);
-    else
-        c = whnf(proj_expr(e));
+/* Auxiliary method for `reduce_proj` */
+optional<expr> type_checker::reduce_proj_core(expr c, unsigned idx) {
     if (is_string_lit(c))
         c = string_lit_to_constructor(c);
     buffer<expr> args;
@@ -396,6 +394,19 @@ optional<expr> type_checker::reduce_proj(expr const & e, bool cheap_rec, bool ch
         return none_expr();
 }
 
+/* If `cheap == true`, then we don't perform delta-reduction when reducing major premise. */
+optional<expr> type_checker::reduce_proj(expr const & e, bool cheap_rec, bool cheap_proj) {
+    if (!proj_idx(e).is_small())
+        return none_expr();
+    unsigned idx = proj_idx(e).get_small_value();
+    expr c;
+    if (cheap_proj)
+        c = whnf_core(proj_expr(e), cheap_rec, cheap_proj);
+    else
+        c = whnf(proj_expr(e));
+    return reduce_proj_core(c, idx);
+}
+
 static bool is_let_fvar(local_ctx const & lctx, expr const & e) {
     lean_assert(is_fvar(e));
     if (optional<local_decl> decl = lctx.find_local_decl(e)) {
@@ -409,7 +420,7 @@ static bool is_let_fvar(local_ctx const & lctx, expr const & e) {
     If `cheap == true`, then we don't perform delta-reduction when reducing major premise of recursors and projections.
     We also do not cache results. */
 expr type_checker::whnf_core(expr const & e, bool cheap_rec, bool cheap_proj) {
-    check_system("whnf");
+    check_system("type checker: whnf", /* do_check_interrupted */ true);
 
     // handle easy cases
     switch (e.kind()) {
@@ -466,6 +477,11 @@ expr type_checker::whnf_core(expr const & e, bool cheap_rec, bool cheap_proj) {
                           cheap_rec, cheap_proj);
         } else if (f == f0) {
             if (auto r = reduce_recursor(e, cheap_rec, cheap_proj)) {
+                if (m_diag) {
+                    auto f = get_app_fn(e);
+                    if (is_constant(f))
+                        m_diag->record_unfold(const_name(f));
+                }
                 /* iota-reduction and quotient reduction rules */
                 return whnf_core(*r, cheap_rec, cheap_proj);
             } else {
@@ -502,8 +518,12 @@ optional<constant_info> type_checker::is_delta(expr const & e) const {
 optional<expr> type_checker::unfold_definition_core(expr const & e) {
     if (is_constant(e)) {
         if (auto d = is_delta(e)) {
-            if (length(const_levels(e)) == d->get_num_lparams())
+            if (length(const_levels(e)) == d->get_num_lparams()) {
+                if (m_diag) {
+                    m_diag->record_unfold(d->get_name());
+                }
                 return some_expr(instantiate_value_lparams(*d, const_levels(e)));
+            }
         }
     }
     return none_expr();
@@ -529,7 +549,7 @@ static expr * g_lean_reduce_bool = nullptr;
 static expr * g_lean_reduce_nat  = nullptr;
 
 namespace ir {
-object * run_boxed(environment const & env, options const & opts, name const & fn, unsigned n, object **args);
+object * run_boxed_kernel(environment const & env, options const & opts, name const & fn, unsigned n, object **args);
 }
 
 expr mk_bool_true();
@@ -540,7 +560,7 @@ optional<expr> reduce_native(environment const & env, expr const & e) {
     expr const & arg = app_arg(e);
     if (!is_constant(arg)) return none_expr();
     if (app_fn(e) == *g_lean_reduce_bool) {
-        object * r = ir::run_boxed(env, options(), const_name(arg), 0, nullptr);
+        object * r = ir::run_boxed_kernel(env, options(), const_name(arg), 0, nullptr);
         if (!lean_is_scalar(r)) {
             lean_dec_ref(r);
             throw kernel_exception(env, "type checker failure, unexpected result value for 'Lean.reduceBool'");
@@ -548,7 +568,7 @@ optional<expr> reduce_native(environment const & env, expr const & e) {
         return lean_unbox(r) == 0 ? some_expr(mk_bool_false()) : some_expr(mk_bool_true());
     }
     if (app_fn(e) == *g_lean_reduce_nat) {
-        object * r = ir::run_boxed(env, options(), const_name(arg), 0, nullptr);
+        object * r = ir::run_boxed_kernel(env, options(), const_name(arg), 0, nullptr);
         if (lean_is_scalar(r) || lean_is_mpz(r)) {
             return some_expr(mk_lit(literal(nat(r))));
         } else {
@@ -573,6 +593,18 @@ template<typename F> optional<expr> type_checker::reduce_bin_nat_op(F const & f,
     nat v1 = get_nat_val(arg1);
     nat v2 = get_nat_val(arg2);
     return some_expr(mk_lit(literal(nat(f(v1.raw(), v2.raw())))));
+}
+
+#define ReducePowMaxExp 1<<24 // TODO: make it configurable
+
+optional<expr> type_checker::reduce_pow(expr const & e) {
+    expr arg1 = whnf(app_arg(app_fn(e)));
+    expr arg2 = whnf(app_arg(e));
+    if (!is_nat_lit_ext(arg2)) return none_expr();
+    nat v1 = get_nat_val(arg1);
+    nat v2 = get_nat_val(arg2);
+    if (v2 > nat(ReducePowMaxExp)) return none_expr();
+    return some_expr(mk_lit(literal(nat(nat_pow(v1.raw(), v2.raw())))));
 }
 
 template<typename F> optional<expr> type_checker::reduce_bin_nat_pred(F const & f, expr const & e) {
@@ -602,11 +634,17 @@ optional<expr> type_checker::reduce_nat(expr const & e) {
         if (f == *g_nat_add) return reduce_bin_nat_op(nat_add, e);
         if (f == *g_nat_sub) return reduce_bin_nat_op(nat_sub, e);
         if (f == *g_nat_mul) return reduce_bin_nat_op(nat_mul, e);
-        if (f == *g_nat_pow) return reduce_bin_nat_op(nat_pow, e);
+        if (f == *g_nat_pow) return reduce_pow(e);
+        if (f == *g_nat_gcd) return reduce_bin_nat_op(nat_gcd, e);
         if (f == *g_nat_mod) return reduce_bin_nat_op(nat_mod, e);
         if (f == *g_nat_div) return reduce_bin_nat_op(nat_div, e);
         if (f == *g_nat_beq) return reduce_bin_nat_pred(nat_eq, e);
         if (f == *g_nat_ble) return reduce_bin_nat_pred(nat_le, e);
+        if (f == *g_nat_land) return reduce_bin_nat_op(nat_land, e);
+        if (f == *g_nat_lor)  return reduce_bin_nat_op(nat_lor, e);
+        if (f == *g_nat_xor)  return reduce_bin_nat_op(nat_lxor, e);
+        if (f == *g_nat_shiftLeft) return reduce_bin_nat_op(lean_nat_shiftl, e);
+        if (f == *g_nat_shiftRight) return reduce_bin_nat_op(lean_nat_shiftr, e);
     }
     return none_expr();
 }
@@ -862,7 +900,7 @@ auto type_checker::lazy_delta_reduction_step(expr & t_n, expr & s_n) -> reductio
         return reduction_status::DefUnknown;
     } else if (d_t && !d_s) {
         /* If `s_n` is a projection application, we try to unfold it instead.
-           We added this extra test to address a perfomance issue at defeq tests such as
+           We added this extra test to address a performance issue at defeq tests such as
            ```lean
            expensive_term =?= instFoo.1 a
            ```
@@ -943,6 +981,7 @@ lbool type_checker::is_def_eq_offset(expr const & t, expr const & s) {
     return l_undef;
 }
 
+/** \remark t_n, s_n are updated. */
 lbool type_checker::lazy_delta_reduction(expr & t_n, expr & s_n) {
     while (true) {
         lbool r = is_def_eq_offset(t_n, s_n);
@@ -970,6 +1009,33 @@ lbool type_checker::lazy_delta_reduction(expr & t_n, expr & s_n) {
         }
     }
 }
+
+/*
+Auxiliary method for checking `t_n.idx =?= s_n.idx`.
+It lazily unfolds `t_n` and `s_n`.
+Recall that the simpler approach used at `Meta.ExprDefEq` cannot be used in the
+kernel since it does not have access to reducibility annotations.
+The approach used here is more complicated, but it is also more powerful.
+*/
+bool type_checker::lazy_delta_proj_reduction(expr & t_n, expr & s_n, nat const & idx) {
+    while (true) {
+        switch (lazy_delta_reduction_step(t_n, s_n)) {
+        case reduction_status::Continue:   break;
+        case reduction_status::DefEqual:   return true;
+        case reduction_status::DefUnknown:
+        case reduction_status::DefDiff:
+            if (idx.is_small()) {
+                unsigned i = idx.get_small_value();
+                if (auto t = reduce_proj_core(t_n, i)) {
+                if (auto s = reduce_proj_core(s_n, i)) {
+                    return is_def_eq_core(*t, *s);
+                }}
+            }
+            return is_def_eq_core(t_n, s_n);
+        }
+    }
+}
+
 
 static expr * g_string_mk = nullptr;
 
@@ -1000,18 +1066,20 @@ bool type_checker::is_def_eq_unit_like(expr const & t, expr const & s) {
 }
 
 bool type_checker::is_def_eq_core(expr const & t, expr const & s) {
-    check_system("is_definitionally_equal");
+    check_system("is_definitionally_equal", /* do_check_interrupted */ true);
     bool use_hash = true;
     lbool r = quick_is_def_eq(t, s, use_hash);
+    if (r != l_undef) return r == l_true;
+
     // Very basic support for proofs by reflection. If `t` has no free variables and `s` is `Bool.true`,
     // we fully reduce `t` and check whether result is `s`.
-    // TODO: add metadata to control whether this optimization is used or not.
+    // This code path is taken in particular when using the `decide` tactic, which produces
+    // proof terms of the form `Eq.refl true : decide p = true`.
     if (!has_fvar(t) && is_constant(s, *g_bool_true)) {
         if (is_constant(whnf(t), *g_bool_true)) {
             return true;
         }
     }
-    if (r != l_undef) return r == l_true;
 
     /*
       Apply whnf (without using delta-reduction or normalizer extensions), *and*
@@ -1031,6 +1099,7 @@ bool type_checker::is_def_eq_core(expr const & t, expr const & s) {
     r = is_def_eq_proof_irrel(t_n, s_n);
     if (r != l_undef) return r == l_true;
 
+    /* NB: `lazy_delta_reduction` updates `t_n` and `s_n` even when returning `l_undef`. */
     r = lazy_delta_reduction(t_n, s_n);
     if (r != l_undef) return r == l_true;
 
@@ -1041,8 +1110,12 @@ bool type_checker::is_def_eq_core(expr const & t, expr const & s) {
     if (is_fvar(t_n) && is_fvar(s_n) && fvar_name(t_n) == fvar_name(s_n))
         return true;
 
-    if (is_proj(t_n) && is_proj(s_n) && proj_idx(t_n) == proj_idx(s_n) && is_def_eq(proj_expr(t_n), proj_expr(s_n)))
-        return true;
+    if (is_proj(t_n) && is_proj(s_n) && proj_idx(t_n) == proj_idx(s_n)) {
+        expr t_c = proj_expr(t_n);
+        expr s_c = proj_expr(s_n);
+        if (lazy_delta_proj_reduction(t_c, s_c, proj_idx(t_n)))
+            return true;
+    }
 
     // Invoke `whnf_core` again, but now using `whnf` to reduce projections.
     expr t_n_n = whnf_core(t_n);
@@ -1099,18 +1172,18 @@ expr type_checker::eta_expand(expr const & e) {
     return m_lctx.mk_lambda(fvars, r);
 }
 
-type_checker::type_checker(environment const & env, local_ctx const & lctx, definition_safety ds):
-    m_st_owner(true), m_st(new state(env)),
+type_checker::type_checker(environment const & env, local_ctx const & lctx, diagnostics * diag, definition_safety ds):
+    m_st_owner(true), m_st(new state(env)), m_diag(diag),
     m_lctx(lctx), m_definition_safety(ds), m_lparams(nullptr) {
 }
 
 type_checker::type_checker(state & st, local_ctx const & lctx, definition_safety ds):
-    m_st_owner(false), m_st(&st), m_lctx(lctx),
+    m_st_owner(false), m_st(&st), m_diag(nullptr), m_lctx(lctx),
     m_definition_safety(ds), m_lparams(nullptr) {
 }
 
 type_checker::type_checker(type_checker && src):
-    m_st_owner(src.m_st_owner), m_st(src.m_st), m_lctx(std::move(src.m_lctx)),
+    m_st_owner(src.m_st_owner), m_st(src.m_st), m_diag(src.m_diag), m_lctx(std::move(src.m_lctx)),
     m_definition_safety(src.m_definition_safety), m_lparams(src.m_lparams) {
     src.m_st_owner = false;
 }
@@ -1120,66 +1193,60 @@ type_checker::~type_checker() {
         delete m_st;
 }
 
-extern "C" LEAN_EXPORT lean_object * lean_kernel_is_def_eq(lean_object * env, lean_object * lctx, lean_object * a, lean_object * b) {
-    return catch_kernel_exceptions<object*>([&]() {
-        return lean_box(type_checker(environment(env), local_ctx(lctx)).is_def_eq(expr(a), expr(b)));
-    });
-}
-
-extern "C" LEAN_EXPORT lean_object * lean_kernel_whnf(lean_object * env, lean_object * lctx, lean_object * a) {
-    return catch_kernel_exceptions<object*>([&]() {
-        return type_checker(environment(env), local_ctx(lctx)).whnf(expr(a)).steal();
-    });
+inline static expr * new_persistent_expr_const(name const & n) {
+    expr * e = new expr(mk_const(n));
+    mark_persistent(e->raw());
+    return e;
 }
 
 void initialize_type_checker() {
-    g_dont_care    = new expr(mk_const("dontcare"));
-    mark_persistent(g_dont_care->raw());
     g_kernel_fresh = new name("_kernel_fresh");
     mark_persistent(g_kernel_fresh->raw());
     g_bool_true    = new name{"Bool", "true"};
-    g_nat_zero     = new expr(mk_constant(name{"Nat", "zero"}));
-    mark_persistent(g_nat_zero->raw());
-    g_nat_succ     = new expr(mk_constant(name{"Nat", "succ"}));
-    mark_persistent(g_nat_succ->raw());
-    g_nat_add      = new expr(mk_constant(name{"Nat", "add"}));
-    mark_persistent(g_nat_add->raw());
-    g_nat_sub      = new expr(mk_constant(name{"Nat", "sub"}));
-    mark_persistent(g_nat_sub->raw());
-    g_nat_mul      = new expr(mk_constant(name{"Nat", "mul"}));
-    mark_persistent(g_nat_mul->raw());
-    g_nat_pow      = new expr(mk_constant(name{"Nat", "pow"}));
-    mark_persistent(g_nat_pow->raw());
-    g_nat_div      = new expr(mk_constant(name{"Nat", "div"}));
-    mark_persistent(g_nat_div->raw());
-    g_nat_mod      = new expr(mk_constant(name{"Nat", "mod"}));
-    mark_persistent(g_nat_mod->raw());
-    g_nat_beq      = new expr(mk_constant(name{"Nat", "beq"}));
-    mark_persistent(g_nat_beq->raw());
-    g_nat_ble      = new expr(mk_constant(name{"Nat", "ble"}));
-    mark_persistent(g_nat_ble->raw());
-    g_string_mk    = new expr(mk_constant(name{"String", "mk"}));
-    mark_persistent(g_string_mk->raw());
-    g_lean_reduce_bool = new expr(mk_constant(name{"Lean", "reduceBool"}));
-    mark_persistent(g_lean_reduce_bool->raw());
-    g_lean_reduce_nat  = new expr(mk_constant(name{"Lean", "reduceNat"}));
-    mark_persistent(g_lean_reduce_nat->raw());
+    mark_persistent(g_bool_true->raw());
+    g_dont_care    = new_persistent_expr_const("dontcare");
+    g_nat_zero     = new_persistent_expr_const({"Nat", "zero"});
+    g_nat_succ     = new_persistent_expr_const({"Nat", "succ"});
+    g_nat_add      = new_persistent_expr_const({"Nat", "add"});
+    g_nat_sub      = new_persistent_expr_const({"Nat", "sub"});
+    g_nat_mul      = new_persistent_expr_const({"Nat", "mul"});
+    g_nat_pow      = new_persistent_expr_const({"Nat", "pow"});
+    g_nat_gcd      = new_persistent_expr_const({"Nat", "gcd"});
+    g_nat_div      = new_persistent_expr_const({"Nat", "div"});
+    g_nat_mod      = new_persistent_expr_const({"Nat", "mod"});
+    g_nat_beq      = new_persistent_expr_const({"Nat", "beq"});
+    g_nat_ble      = new_persistent_expr_const({"Nat", "ble"});
+    g_nat_land     = new_persistent_expr_const({"Nat", "land"});
+    g_nat_lor      = new_persistent_expr_const({"Nat", "lor"});
+    g_nat_xor      = new_persistent_expr_const({"Nat", "xor"});
+    g_nat_shiftLeft  = new_persistent_expr_const({"Nat", "shiftLeft"});
+    g_nat_shiftRight = new_persistent_expr_const({"Nat", "shiftRight"});
+    g_string_mk    = new_persistent_expr_const({"String", "mk"});
+    g_lean_reduce_bool = new_persistent_expr_const({"Lean", "reduceBool"});
+    g_lean_reduce_nat  = new_persistent_expr_const({"Lean", "reduceNat"});
     register_name_generator_prefix(*g_kernel_fresh);
 }
 
 void finalize_type_checker() {
-    delete g_dont_care;
     delete g_kernel_fresh;
+    delete g_bool_true;
+    delete g_dont_care;
     delete g_nat_succ;
     delete g_nat_zero;
     delete g_nat_add;
     delete g_nat_sub;
     delete g_nat_mul;
     delete g_nat_pow;
+    delete g_nat_gcd;
     delete g_nat_div;
     delete g_nat_mod;
     delete g_nat_beq;
     delete g_nat_ble;
+    delete g_nat_land;
+    delete g_nat_lor;
+    delete g_nat_xor;
+    delete g_nat_shiftLeft;
+    delete g_nat_shiftRight;
     delete g_string_mk;
     delete g_lean_reduce_bool;
     delete g_lean_reduce_nat;

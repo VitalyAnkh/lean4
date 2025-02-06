@@ -33,17 +33,24 @@ def dbgSleep {α : Type u} (ms : UInt32) (f : Unit → α) : α := f ()
 @[noinline] private def mkPanicMessage (modName : String) (line col : Nat) (msg : String) : String :=
   "PANIC at " ++ modName ++ ":" ++ toString line ++ ":" ++ toString col ++ ": " ++ msg
 
-@[never_extract, inline] def panicWithPos {α : Type u} [Inhabited α] (modName : String) (line col : Nat) (msg : String) : α :=
+@[never_extract, inline] def panicWithPos {α : Sort u} [Inhabited α] (modName : String) (line col : Nat) (msg : String) : α :=
   panic (mkPanicMessage modName line col msg)
 
 @[noinline] private def mkPanicMessageWithDecl (modName : String) (declName : String) (line col : Nat) (msg : String) : String :=
   "PANIC at " ++ declName ++ " " ++ modName ++ ":" ++ toString line ++ ":" ++ toString col ++ ": " ++ msg
 
-@[never_extract, inline] def panicWithPosWithDecl {α : Type u} [Inhabited α] (modName : String) (declName : String) (line col : Nat) (msg : String) : α :=
+@[never_extract, inline] def panicWithPosWithDecl {α : Sort u} [Inhabited α] (modName : String) (declName : String) (line col : Nat) (msg : String) : α :=
   panic (mkPanicMessageWithDecl modName declName line col msg)
 
 @[extern "lean_ptr_addr"]
 unsafe opaque ptrAddrUnsafe {α : Type u} (a : @& α) : USize
+
+/--
+Returns `true` if `a` is an exclusive object.
+We say an object is exclusive if it is single-threaded and its reference counter is 1.
+-/
+@[extern "lean_is_exclusive_obj"]
+unsafe opaque isExclusiveUnsafe {α : Type u} (a : @& α) : Bool
 
 set_option linter.unusedVariables.funArgs false in
 @[inline] unsafe def withPtrAddrUnsafe {α : Type u} {β : Type v} (a : α) (k : USize → β) (h : ∀ u₁ u₂, k u₁ = k u₂) : β :=
@@ -72,16 +79,3 @@ def withPtrEq {α : Type u} (a b : α) (k : Unit → Bool) (h : a = b → k () =
 
 @[implemented_by withPtrAddrUnsafe]
 def withPtrAddr {α : Type u} {β : Type v} (a : α) (k : USize → β) (h : ∀ u₁ u₂, k u₁ = k u₂) : β := k 0
-
-@[never_extract]
-private def outOfBounds [Inhabited α] : α :=
-  panic! "index out of bounds"
-
-@[inline] def getElem! [GetElem cont idx elem dom] [Inhabited elem] (xs : cont) (i : idx) [Decidable (dom xs i)] : elem :=
-  if h : _ then getElem xs i h else outOfBounds
-
-@[inline] def getElem? [GetElem cont idx elem dom] (xs : cont) (i : idx) [Decidable (dom xs i)] : Option elem :=
-  if h : _ then some (getElem xs i h) else none
-
-macro:max x:term noWs "[" i:term "]" noWs "?" : term => `(getElem? $x $i)
-macro:max x:term noWs "[" i:term "]" noWs "!" : term => `(getElem! $x $i)

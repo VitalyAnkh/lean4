@@ -3,9 +3,11 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura, Sebastian Ullrich
 -/
+prelude
 import Lean.Data.Trie
 import Lean.Syntax
 import Lean.Message
+import Lean.DocString.Extension
 
 namespace Lean.Parser
 
@@ -31,7 +33,7 @@ def minPrec  : Nat := eval_prec min
 
 abbrev Token := String
 
-abbrev TokenTable := Trie Token
+abbrev TokenTable := Lean.Data.Trie Token
 
 abbrev SyntaxNodeKindSet := PersistentHashMap SyntaxNodeKind Unit
 
@@ -73,6 +75,10 @@ structure ParserContextCore extends InputContext, ParserModuleContext, Cacheable
 structure ParserContext extends ParserContextCore where private mk ::
 
 structure Error where
+  /--
+    If not `missing`, used for lazily calculating `unexpected` message and range in `mkErrorMessage`.
+    Otherwise, `ParserState.pos` is used as an empty range. -/
+  unexpectedTk : Syntax := .missing
   unexpected : String := ""
   expected : List String := []
   deriving Inhabited, BEq
@@ -98,7 +104,9 @@ instance : ToString Error where
 
 def merge (e₁ e₂ : Error) : Error :=
   match e₂ with
-  | { unexpected := u, .. } => { unexpected := if u == "" then e₁.unexpected else u, expected := e₁.expected ++ e₂.expected }
+  -- We expect errors to be merged to be about the same token, so unconditionally copy second `unexpectedTk`
+  | { unexpectedTk, unexpected := u, .. } =>
+    { unexpectedTk, unexpected := if u == "" then e₁.unexpected else u, expected := e₁.expected ++ e₂.expected }
 
 end Error
 
@@ -124,7 +132,7 @@ structure ParserCacheEntry where
 
 structure ParserCache where
   tokenCache  : TokenCacheEntry
-  parserCache : HashMap ParserCacheKey ParserCacheEntry
+  parserCache : Std.HashMap ParserCacheKey ParserCacheEntry
 
 def initCacheForInput (input : String) : ParserCache where
   tokenCache  := { startPos := input.endPos + ' ' /- make sure it is not a valid position -/ }
@@ -163,7 +171,7 @@ def pop (stack : SyntaxStack) : SyntaxStack :=
 
 def back (stack : SyntaxStack) : Syntax :=
   if stack.size > 0 then
-    stack.raw.back
+    stack.raw.back!
   else
     panic! "SyntaxStack.back: element is inaccessible"
 
@@ -192,9 +200,11 @@ structure ParserState where
   pos      : String.Pos := 0
   cache    : ParserCache
   errorMsg : Option Error := none
+  recoveredErrors : Array (String.Pos × SyntaxStack × Error) := #[]
 
 namespace ParserState
 
+@[inline]
 def hasError (s : ParserState) : Bool :=
   s.errorMsg != none
 
@@ -225,16 +235,9 @@ def next (s : ParserState) (input : String) (pos : String.Pos) : ParserState :=
 def next' (s : ParserState) (input : String) (pos : String.Pos) (h : ¬ input.atEnd pos) : ParserState :=
   { s with pos := input.next' pos h }
 
-def toErrorMsg (ctx : InputContext) (s : ParserState) : String :=
-  match s.errorMsg with
-  | none     => ""
-  | some msg =>
-    let pos := ctx.fileMap.toPosition s.pos
-    mkErrorStringWithPos ctx.fileName pos (toString msg)
-
 def mkNode (s : ParserState) (k : SyntaxNodeKind) (iniStackSz : Nat) : ParserState :=
   match s with
-  | ⟨stack, lhsPrec, pos, cache, err⟩ =>
+  | ⟨stack, lhsPrec, pos, cache, err, recovered⟩ =>
     if err != none && stack.size == iniStackSz then
       -- If there is an error but there are no new nodes on the stack, use `missing` instead.
       -- Thus we ensure the property that an syntax tree contains (at least) one `missing` node
@@ -244,49 +247,78 @@ def mkNode (s : ParserState) (k : SyntaxNodeKind) (iniStackSz : Nat) : ParserSta
       -- `node k1 p1 <|> ... <|> node kn pn` when all parsers fail. With the code below we
       -- instead return a less misleading single `missing` node without randomly selecting any `ki`.
       let stack   := stack.push Syntax.missing
-      ⟨stack, lhsPrec, pos, cache, err⟩
+      ⟨stack, lhsPrec, pos, cache, err, recovered⟩
     else
       let newNode := Syntax.node SourceInfo.none k (stack.extract iniStackSz stack.size)
       let stack   := stack.shrink iniStackSz
       let stack   := stack.push newNode
-      ⟨stack, lhsPrec, pos, cache, err⟩
+      ⟨stack, lhsPrec, pos, cache, err, recovered⟩
 
 def mkTrailingNode (s : ParserState) (k : SyntaxNodeKind) (iniStackSz : Nat) : ParserState :=
   match s with
-  | ⟨stack, lhsPrec, pos, cache, err⟩ =>
+  | ⟨stack, lhsPrec, pos, cache, err, errs⟩ =>
     let newNode := Syntax.node SourceInfo.none k (stack.extract (iniStackSz - 1) stack.size)
     let stack   := stack.shrink (iniStackSz - 1)
     let stack   := stack.push newNode
-    ⟨stack, lhsPrec, pos, cache, err⟩
+    ⟨stack, lhsPrec, pos, cache, err, errs⟩
 
-def setError (s : ParserState) (msg : String) : ParserState :=
+def allErrors (s : ParserState) : Array (String.Pos × SyntaxStack × Error) :=
+  s.recoveredErrors ++ (s.errorMsg.map (fun e => #[(s.pos, s.stxStack, e)])).getD #[]
+
+@[inline]
+def setError (s : ParserState) (e : Error) : ParserState :=
   match s with
-  | ⟨stack, lhsPrec, pos, cache, _⟩ => ⟨stack, lhsPrec, pos, cache, some { expected := [ msg ] }⟩
+  | ⟨stack, lhsPrec, pos, cache, _, errs⟩ => ⟨stack, lhsPrec, pos, cache, some e, errs⟩
 
 def mkError (s : ParserState) (msg : String) : ParserState :=
-  match s with
-  | ⟨stack, lhsPrec, pos, cache, _⟩ => ⟨stack.push Syntax.missing, lhsPrec, pos, cache, some { expected := [ msg ] }⟩
+  s.setError { expected := [msg] } |>.pushSyntax .missing
 
 def mkUnexpectedError (s : ParserState) (msg : String) (expected : List String := []) (pushMissing := true) : ParserState :=
-  match s with
-  | ⟨stack, lhsPrec, pos, cache, _⟩ => ⟨if pushMissing then stack.push .missing else stack, lhsPrec, pos, cache, some { unexpected := msg, expected := expected }⟩
+  let s := s.setError { unexpected := msg, expected }
+  if pushMissing then s.pushSyntax .missing else s
 
 def mkEOIError (s : ParserState) (expected : List String := []) : ParserState :=
   s.mkUnexpectedError "unexpected end of input" expected
 
-def mkErrorAt (s : ParserState) (msg : String) (pos : String.Pos) (initStackSz? : Option Nat := none) : ParserState :=
-  match s,  initStackSz? with
-  | ⟨stack, lhsPrec, _, cache, _⟩, none    => ⟨stack.push Syntax.missing, lhsPrec, pos, cache, some { expected := [ msg ] }⟩
-  | ⟨stack, lhsPrec, _, cache, _⟩, some sz => ⟨stack.shrink sz |>.push Syntax.missing, lhsPrec, pos, cache, some { expected := [ msg ] }⟩
+def mkErrorsAt (s : ParserState) (ex : List String) (pos : String.Pos) (initStackSz? : Option Nat := none) : ParserState := Id.run do
+  let mut s := s.setPos pos
+  if let some sz := initStackSz? then
+    s := s.shrinkStack sz
+  s := s.setError { expected := ex }
+  s.pushSyntax .missing
 
-def mkErrorsAt (s : ParserState) (ex : List String) (pos : String.Pos) (initStackSz? : Option Nat := none) : ParserState :=
-  match s, initStackSz? with
-  | ⟨stack, lhsPrec, _, cache, _⟩, none    => ⟨stack.push Syntax.missing, lhsPrec, pos, cache, some { expected := ex }⟩
-  | ⟨stack, lhsPrec, _, cache, _⟩, some sz => ⟨stack.shrink sz |>.push Syntax.missing, lhsPrec, pos, cache, some { expected := ex }⟩
+def mkErrorAt (s : ParserState) (msg : String) (pos : String.Pos) (initStackSz? : Option Nat := none) : ParserState :=
+  s.mkErrorsAt [msg] pos initStackSz?
+
+/--
+  Reports given 'expected' messages at range of top stack element (assumed to be a single token).
+  Replaces the element with `missing` and resets position to the token position.
+  `iniPos` can be specified to avoid this position lookup but still must be identical to the token position. -/
+-- We use `0` as a cheap default to save an allocation; we're unlikely to do enough backtracking at that
+-- position to be significant.
+def mkUnexpectedTokenErrors (s : ParserState) (ex : List String) (iniPos : String.Pos := 0) : ParserState :=
+  let tk := s.stxStack.back
+  let s := s.setPos (if iniPos > 0 then iniPos else tk.getPos?.get!)
+  let s := s.setError { unexpectedTk := tk, expected := ex }
+  s.popSyntax.pushSyntax .missing
+
+/--
+  Reports given 'expected' message at range of top stack element (assumed to be a single token).
+  Replaces the element with `missing` and resets position to the token position.
+  `iniPos` can be specified to avoid this position lookup but still must be identical to the token position. -/
+def mkUnexpectedTokenError (s : ParserState) (msg : String) (iniPos : String.Pos := 0) : ParserState :=
+  s.mkUnexpectedTokenErrors [msg] iniPos
 
 def mkUnexpectedErrorAt (s : ParserState) (msg : String) (pos : String.Pos) : ParserState :=
-  match s with
-  | ⟨stack, lhsPrec, _, cache, _⟩ => ⟨stack.push Syntax.missing, lhsPrec, pos, cache, some { unexpected := msg }⟩
+  s.setPos pos |>.mkUnexpectedError msg
+
+def toErrorMsg (ctx : InputContext) (s : ParserState) : String := Id.run do
+  let mut errStr := ""
+  for (pos, _stk, err) in s.allErrors do
+    if errStr != "" then errStr := errStr ++ "\n"
+    let pos := ctx.fileMap.toPosition pos
+    errStr := errStr ++ mkErrorStringWithPos ctx.fileName pos (toString err)
+  errStr
 
 end ParserState
 
@@ -387,17 +419,17 @@ place if there was an error.
 -/
 def withCacheFn (parserName : Name) (p : ParserFn) : ParserFn := fun c s => Id.run do
   let key := ⟨c.toCacheableParserContext, parserName, s.pos⟩
-  if let some r := s.cache.parserCache.find? key then
+  if let some r := s.cache.parserCache[key]? then
     -- TODO: turn this into a proper trace once we have these in the parser
     --dbg_trace "parser cache hit: {parserName}:{s.pos} -> {r.stx}"
-    return ⟨s.stxStack.push r.stx, r.lhsPrec, r.newPos, s.cache, r.errorMsg⟩
+    return ⟨s.stxStack.push r.stx, r.lhsPrec, r.newPos, s.cache, r.errorMsg, s.recoveredErrors⟩
   let initStackSz := s.stxStack.raw.size
   let s := withStackDrop initStackSz p c { s with lhsPrec := 0, errorMsg := none }
   if s.stxStack.raw.size != initStackSz + 1 then
     panic! s!"withCacheFn: unexpected stack growth {s.stxStack.raw}"
   { s with cache.parserCache := s.cache.parserCache.insert key ⟨s.stxStack.back, s.lhsPrec, s.pos, s.errorMsg⟩ }
 
-@[inherit_doc withCacheFn]
+@[inherit_doc withCacheFn, builtin_doc]
 def withCache (parserName : Name) : Parser → Parser := withFn (withCacheFn parserName)
 
 def ParserFn.run (p : ParserFn) (ictx : InputContext) (pmctx : ParserModuleContext) (tokens : TokenTable) (s : ParserState) : ParserState :=

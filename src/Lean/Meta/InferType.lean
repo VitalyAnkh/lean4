@@ -3,6 +3,7 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Data.LBool
 import Lean.Meta.Basic
 
@@ -94,21 +95,22 @@ private def inferConstType (c : Name) (us : List Level) : MetaM Expr := do
     throwIncorrectNumberOfLevels c us
 
 private def inferProjType (structName : Name) (idx : Nat) (e : Expr) : MetaM Expr := do
-  let failed {α} : Unit → MetaM α := fun _ =>
-    throwError "invalid projection{indentExpr (mkProj structName idx e)}"
   let structType ← inferType e
   let structType ← whnf structType
-  matchConstStruct structType.getAppFn failed fun structVal structLvls ctorVal =>
-    let n := structVal.numParams
-    let structParams := structType.getAppArgs
-    if n != structParams.size then
+  let failed {α} : Unit → MetaM α := fun _ => do
+    throwError "invalid projection{indentExpr (mkProj structName idx e)}\nfrom type{indentExpr structType}"
+  matchConstStructure structType.getAppFn failed fun structVal structLvls ctorVal => do
+    unless structVal.name == structName do
+      failed ()
+    let structTypeArgs := structType.getAppArgs
+    if structVal.numParams + structVal.numIndices != structTypeArgs.size then
       failed ()
     else do
-      let mut ctorType ← inferAppType (mkConst ctorVal.name structLvls) structParams
+      let mut ctorType ← inferAppType (mkConst ctorVal.name structLvls) structTypeArgs[:structVal.numParams]
       for i in [:idx] do
         ctorType ← whnf ctorType
         match ctorType with
-        | Expr.forallE _ _ body _ =>
+        | .forallE _ _ body _ =>
           if body.hasLooseBVars then
             ctorType := body.instantiate1 <| mkProj structName i e
           else
@@ -116,8 +118,8 @@ private def inferProjType (structName : Name) (idx : Nat) (e : Expr) : MetaM Exp
         | _ => failed ()
       ctorType ← whnf ctorType
       match ctorType with
-      | Expr.forallE _ d _ _ => return d.consumeTypeAnnotations
-      | _                    => failed ()
+      | .forallE _ d _ _ => return d.consumeTypeAnnotations
+      | _                => failed ()
 
 def throwTypeExcepted {α} (type : Expr) : MetaM α :=
   throwError "type expected{indentExpr type}"
@@ -165,13 +167,32 @@ private def inferFVarType (fvarId : FVarId) : MetaM Expr := do
   | none   => fvarId.throwUnknown
 
 @[inline] private def checkInferTypeCache (e : Expr) (inferType : MetaM Expr) : MetaM Expr := do
-  match (← get).cache.inferType.find? e with
-  | some type => return type
-  | none =>
-    let type ← inferType
-    unless e.hasMVar || type.hasMVar do
-      modifyInferTypeCache fun c => c.insert e type
-    return type
+  if e.hasMVar then
+    inferType
+  else
+    let key ← mkExprConfigCacheKey e
+    match (← get).cache.inferType.find? key with
+    | some type => return type
+    | none =>
+      let type ← inferType
+      unless type.hasMVar do
+        modifyInferTypeCache fun c => c.insert key type
+      return type
+
+/--
+Ensure `MetaM` configuration is strong enough for inferring/checking types.
+For example, `beta := true` is essential when type checking.
+
+Remark: we previously use the default configuration here, but this is problematic
+because it overrides unrelated configurations.
+-/
+@[inline] def withInferTypeConfig (x : MetaM α) : MetaM α :=
+  withAtLeastTransparency .default do
+    let cfg ← getConfig
+    if cfg.beta && cfg.iota && cfg.zeta && cfg.zetaDelta && cfg.proj == .yesWithDelta then
+      x
+    else
+      withConfig (fun cfg => { cfg with beta := true, iota := true, zeta := true, zetaDelta := true, proj := .yesWithDelta }) x
 
 @[export lean_infer_type]
 def inferTypeImp (e : Expr) : MetaM Expr :=
@@ -190,7 +211,7 @@ def inferTypeImp (e : Expr) : MetaM Expr :=
     | .forallE ..    => checkInferTypeCache e (inferForallType e)
     | .lam ..        => checkInferTypeCache e (inferLambdaType e)
     | .letE ..       => checkInferTypeCache e (inferLambdaType e)
-  withIncRecDepth <| withTransparency TransparencyMode.default (infer e)
+  withIncRecDepth <| withInferTypeConfig (infer e)
 
 /--
   Return `LBool.true` if given level is always equivalent to universe level zero.
@@ -246,7 +267,7 @@ partial def isPropQuick : Expr → MetaM LBool
   | .mvar mvarId      => do let mvarType  ← inferMVarType mvarId;  isArrowProp mvarType 0
   | .app f ..         => isPropQuickApp f 1
 
-/-- `isProp whnf e` return `true` if `e` is a proposition.
+/-- `isProp e` returns `true` if `e` is a proposition.
 
      If `e` contains metavariables, it may not be possible
      to decide whether is a proposition or not. We return `false` in this
@@ -371,35 +392,41 @@ def isType (e : Expr) : MetaM Bool := do
     | .sort .. => return true
     | _        => return false
 
+def typeFormerTypeLevelQuick : Expr → Option Level
+  | .forallE _ _ b _ => typeFormerTypeLevelQuick b
+  | .sort l => some l
+  | _ => none
 
-@[inline] private def withLocalDecl' {α} (name : Name) (bi : BinderInfo) (type : Expr) (x : Expr → MetaM α) : MetaM α := do
-  let fvarId ← mkFreshFVarId
-  withReader (fun ctx => { ctx with lctx := ctx.lctx.mkLocalDecl fvarId name type bi }) do
-    x (mkFVar fvarId)
-
-def isTypeFormerTypeQuick : Expr → Bool
-  | .forallE _ _ b _ => isTypeFormerTypeQuick b
-  | .sort _ => true
-  | _ => false
+/--
+Return `u` iff `type` is `Sort u` or `As → Sort u`.
+-/
+partial def typeFormerTypeLevel (type : Expr) : MetaM (Option Level) := do
+  match typeFormerTypeLevelQuick type with
+  | .some l => return .some l
+  | .none => savingCache <| go type #[]
+where
+  go (type : Expr) (xs : Array Expr) : MetaM (Option Level) := do
+    match type with
+    | .sort l => return some l
+    | .forallE n d b c => withLocalDeclNoLocalInstanceUpdate n c (d.instantiateRev xs) fun x => go b (xs.push x)
+    | _ =>
+      let type ← whnfD (type.instantiateRev xs)
+      match type with
+      | .sort l => return some l
+      | .forallE .. => go type #[]
+      | _ => return none
 
 /--
 Return true iff `type` is `Sort _` or `As → Sort _`.
 -/
 partial def isTypeFormerType (type : Expr) : MetaM Bool := do
-  match isTypeFormerTypeQuick type with
-  | true => return true
-  | false => savingCache <| go type #[]
-where
-  go (type : Expr) (xs : Array Expr) : MetaM Bool := do
-    match type with
-    | .sort .. => return true
-    | .forallE n d b c => withLocalDecl' n c (d.instantiateRev xs) fun x => go b (xs.push x)
-    | _ =>
-      let type ← whnfD (type.instantiateRev xs)
-      match type with
-      | .sort .. => return true
-      | .forallE .. => go type #[]
-      | _ => return false
+  return (← typeFormerTypeLevel type).isSome
+
+/--
+Return true iff `type` is `Prop` or `As → Prop`.
+-/
+partial def isPropFormerType (type : Expr) : MetaM Bool := do
+  return (← typeFormerTypeLevel type) == .some .zero
 
 /--
 Return true iff `e : Sort _` or `e : (forall As, Sort _)`.
@@ -407,5 +434,29 @@ Remark: it subsumes `isType`
 -/
 def isTypeFormer (e : Expr) : MetaM Bool := do
   isTypeFormerType (← inferType e)
+
+
+/--
+Given `n` and a non-dependent function type `α₁ → α₂ → ... → αₙ → Sort u`, returns the
+types `α₁, α₂, ..., αₙ`. Throws an error if there are not at least `n` argument types or if a
+later argument type depends on a prior one (i.e., it's a dependent function type).
+
+This can be used to infer the expected type of the alternatives when constructing a `MatcherApp`.
+-/
+def arrowDomainsN (n : Nat) (type : Expr) : MetaM (Array Expr) := do
+  forallBoundedTelescope type n fun xs _ => do
+    unless xs.size = n do
+      throwError "type {type} does not have {n} parameters"
+    let types ← xs.mapM (inferType ·)
+    for t in types do
+      if t.hasAnyFVar (fun fvar => xs.contains (.fvar fvar)) then
+        throwError "unexpected dependent type {t} in {type}"
+    return types
+
+/--
+Infers the types of the next `n` parameters that `e` expects. See `arrowDomainsN`.
+-/
+def inferArgumentTypesN (n : Nat) (e : Expr) : MetaM (Array Expr) := do
+  arrowDomainsN n (← inferType e)
 
 end Lean.Meta

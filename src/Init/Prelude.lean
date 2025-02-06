@@ -9,9 +9,9 @@ set_option linter.missingDocs true -- keep it documented
 /-!
 # Init.Prelude
 
-This is the first file in the lean import hierarchy. It is responsible for setting
-up basic definitions, most of which lean already has "built in knowledge" about,
-so it is important that they be set up in exactly this way. (For example, lean will
+This is the first file in the Lean import hierarchy. It is responsible for setting
+up basic definitions, most of which Lean already has "built in knowledge" about,
+so it is important that they be set up in exactly this way. (For example, Lean will
 use `PUnit` in the desugaring of `do` notation, or in the pattern match compiler.)
 
 -/
@@ -24,7 +24,7 @@ The identity function. `id` takes an implicit argument `α : Sort u`
 
 Although this may look like a useless function, one application of the identity
 function is to explicitly put a type on an expression. If `e` has type `T`,
-and `T'` is definitionally equal to `T`, then `@id T' e` typechecks, and lean
+and `T'` is definitionally equal to `T`, then `@id T' e` typechecks, and Lean
 knows that this expression has type `T'` rather than `T`. This can make a
 difference for typeclass inference, since `T` and `T'` may have different
 typeclass instances on them. `show T' from e` is sugar for an `@id T' e`
@@ -66,6 +66,19 @@ example (b : Bool) : Function.const Bool 10 b = 10 :=
 @[inline] def Function.const {α : Sort u} (β : Sort v) (a : α) : β → α :=
   fun _ => a
 
+/--
+The encoding of `let_fun x := v; b` is `letFun v (fun x => b)`.
+This is equal to `(fun x => b) v`, so the value of `x` is not accessible to `b`.
+This is in contrast to `let x := v; b`, where the value of `x` is accessible to `b`.
+
+There is special support for `letFun`.
+Both WHNF and `simp` are aware of `letFun` and can reduce it when zeta reduction is enabled,
+despite the fact it is marked `irreducible`.
+For metaprogramming, the function `Lean.Expr.letFun?` can be used to recognize a `let_fun` expression
+to extract its parts as if it were a `let` expression.
+-/
+@[irreducible] def letFun {α : Sort u} {β : α → Sort v} (v : α) (f : (x : α) → β x) : β v := f v
+
 set_option checkBinderAnnotations false in
 /--
 `inferInstance` synthesizes a value of any target type by typeclass
@@ -104,7 +117,7 @@ set_option bootstrap.inductiveCheckResultingUniverse false in
 The unit type, the canonical type with one element, named `unit` or `()`.
 This is the universe-polymorphic version of `Unit`; it is preferred to use
 `Unit` instead where applicable.
-For more information about universe levels: [Types as objects](https://leanprover.github.io/theorem_proving_in_lean4/dependent_type_theory.html#types-as-objects)
+For more information about universe levels: [Types as objects](https://lean-lang.org/theorem_proving_in_lean4/dependent_type_theory.html#types-as-objects)
 -/
 inductive PUnit : Sort u where
   /-- `PUnit.unit : PUnit` is the canonical element of the unit type. -/
@@ -116,7 +129,7 @@ In other words, it describes only a single value, which consists of said constru
 to no arguments whatsoever.
 The `Unit` type is similar to `void` in languages derived from C.
 
-`Unit` is actually defined as `PUnit.{0}` where `PUnit` is the universe
+`Unit` is actually defined as `PUnit.{1}` where `PUnit` is the universe
 polymorphic version. The `Unit` should be preferred over `PUnit` where possible to avoid
 unnecessary universe parameters.
 
@@ -136,6 +149,9 @@ It can also be written as `()`.
 
 /-- Marker for information that has been erased by the code generator. -/
 unsafe axiom lcErased : Type
+
+/-- Marker for type dependency that has been erased by the code generator. -/
+unsafe axiom lcAny : Type
 
 /--
 Auxiliary unsafe constant used by the Compiler when erasing proofs from code.
@@ -171,7 +187,7 @@ unsafe axiom lcUnreachable {α : Sort u} : α
 /--
 `True` is a proposition and has only an introduction rule, `True.intro : True`.
 In other words, `True` is simply true, and has a canonical proof, `True.intro`
-For more information: [Propositional Logic](https://leanprover.github.io/theorem_proving_in_lean4/propositions_and_proofs.html#propositional-logic)
+For more information: [Propositional Logic](https://lean-lang.org/theorem_proving_in_lean4/propositions_and_proofs.html#propositional-logic)
 -/
 inductive True : Prop where
   /-- `True` is true, and `True.intro` (or more commonly, `trivial`)
@@ -184,7 +200,7 @@ It represents a contradiction. `False` elimination rule, `False.rec`,
 expresses the fact that anything follows from a contradiction.
 This rule is sometimes called ex falso (short for ex falso sequitur quodlibet),
 or the principle of explosion.
-For more information: [Propositional Logic](https://leanprover.github.io/theorem_proving_in_lean4/propositions_and_proofs.html#propositional-logic)
+For more information: [Propositional Logic](https://lean-lang.org/theorem_proving_in_lean4/propositions_and_proofs.html#propositional-logic)
 -/
 inductive False : Prop
 
@@ -206,7 +222,7 @@ inductive PEmpty : Sort u where
 so if your goal is `¬p` you can use `intro h` to turn the goal into
 `h : p ⊢ False`, and if you have `hn : ¬p` and `h : p` then `hn h : False`
 and `(hn h).elim` will prove anything.
-For more information: [Propositional Logic](https://leanprover.github.io/theorem_proving_in_lean4/propositions_and_proofs.html#propositional-logic)
+For more information: [Propositional Logic](https://lean-lang.org/theorem_proving_in_lean4/propositions_and_proofs.html#propositional-logic)
 -/
 def Not (a : Prop) : Prop := a → False
 
@@ -228,7 +244,7 @@ Anything follows from two contradictory hypotheses. Example:
 ```
 example (hp : p) (hnp : ¬p) : q := absurd hp hnp
 ```
-For more information: [Propositional Logic](https://leanprover.github.io/theorem_proving_in_lean4/propositions_and_proofs.html#propositional-logic)
+For more information: [Propositional Logic](https://lean-lang.org/theorem_proving_in_lean4/propositions_and_proofs.html#propositional-logic)
 -/
 @[macro_inline] def absurd {a : Prop} {b : Sort v} (h₁ : a) (h₂ : Not a) : b :=
   (h₂ h₁).rec
@@ -258,7 +274,7 @@ example (α : Type) (a b : α) (p : α → Prop)
   h1 ▸ h2
 ```
 The triangle in the second presentation is a macro built on top of `Eq.subst` and `Eq.symm`, and you can enter it by typing `\t`.
-For more information: [Equality](https://leanprover.github.io/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)
+For more information: [Equality](https://lean-lang.org/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)
 -/
 inductive Eq : α → α → Prop where
   /-- `Eq.refl a : a = a` is reflexivity, the unique constructor of the
@@ -274,9 +290,9 @@ inductive Eq : α → α → Prop where
 same as `Eq.refl` except that it takes `a` implicitly instead of explicitly.
 
 This is a more powerful theorem than it may appear at first, because although
-the statement of the theorem is `a = a`, lean will allow anything that is
+the statement of the theorem is `a = a`, Lean will allow anything that is
 definitionally equal to that type. So, for instance, `2 + 2 = 4` is proven in
-lean by `rfl`, because both sides are the same up to definitional equality.
+Lean by `rfl`, because both sides are the same up to definitional equality.
 -/
 @[match_pattern] def rfl {α : Sort u} {a : α} : Eq a a := Eq.refl a
 
@@ -294,7 +310,7 @@ essentially a fancy algorithm for finding good `motive` arguments to usefully
 apply this theorem to replace occurrences of `a` with `b` in the goal or
 hypotheses.
 
-For more information: [Equality](https://leanprover.github.io/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)
+For more information: [Equality](https://lean-lang.org/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)
 -/
 theorem Eq.subst {α : Sort u} {motive : α → Prop} {a b : α} (h₁ : Eq a b) (h₂ : motive a) : motive b :=
   Eq.ndrec h₂ h₁
@@ -305,9 +321,9 @@ Equality is symmetric: if `a = b` then `b = a`.
 Because this is in the `Eq` namespace, if you have a variable `h : a = b`,
 `h.symm` can be used as shorthand for `Eq.symm h` as a proof of `b = a`.
 
-For more information: [Equality](https://leanprover.github.io/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)
+For more information: [Equality](https://lean-lang.org/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)
 -/
-theorem Eq.symm {α : Sort u} {a b : α} (h : Eq a b) : Eq b a :=
+@[symm] theorem Eq.symm {α : Sort u} {a b : α} (h : Eq a b) : Eq b a :=
   h ▸ rfl
 
 /--
@@ -317,7 +333,7 @@ Because this is in the `Eq` namespace, if you have variables or expressions
 `h₁ : a = b` and `h₂ : b = c`, you can use `h₁.trans h₂ : a = c` as shorthand
 for `Eq.trans h₁ h₂`.
 
-For more information: [Equality](https://leanprover.github.io/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)
+For more information: [Equality](https://lean-lang.org/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)
 -/
 theorem Eq.trans {α : Sort u} {a b c : α} (h₁ : Eq a b) (h₂ : Eq b c) : Eq a c :=
   h₂ ▸ h₁
@@ -331,7 +347,7 @@ It is best to avoid this function if you can, because it is more complicated
 to reason about terms containing casts, but if the types don't match up
 definitionally sometimes there isn't anything better you can do.
 
-For more information: [Equality](https://leanprover.github.io/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)
+For more information: [Equality](https://lean-lang.org/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)
 -/
 @[macro_inline] def cast {α β : Sort u} (h : Eq α β) (a : α) : β :=
   h.rec a
@@ -344,7 +360,7 @@ you can also use a lambda expression for `f` to prove that
 internally by tactics like `congr` and `simp` to apply equalities inside
 subterms.
 
-For more information: [Equality](https://leanprover.github.io/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)
+For more information: [Equality](https://lean-lang.org/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)
 -/
 theorem congrArg {α : Sort u} {β : Sort v} {a₁ a₂ : α} (f : α → β) (h : Eq a₁ a₂) : Eq (f a₁) (f a₂) :=
   h ▸ rfl
@@ -354,7 +370,7 @@ Congruence in both function and argument. If `f₁ = f₂` and `a₁ = a₂` the
 `f₁ a₁ = f₂ a₂`. This only works for nondependent functions; the theorem
 statement is more complex in the dependent case.
 
-For more information: [Equality](https://leanprover.github.io/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)
+For more information: [Equality](https://lean-lang.org/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)
 -/
 theorem congr {α : Sort u} {β : Sort v} {f₁ f₂ : α → β} {a₁ a₂ : α} (h₁ : Eq f₁ f₂) (h₂ : Eq a₁ a₂) : Eq (f₁ a₁) (f₂ a₂) :=
   h₁ ▸ h₂ ▸ rfl
@@ -461,9 +477,11 @@ as notation for `Prod.mk a b`. Moreover, `(a, b, c)` is notation for
 `Prod.mk a (Prod.mk b c)`.
 Given `p : Prod α β`, `p.1 : α` and `p.2 : β`. They are short for `Prod.fst p`
 and `Prod.snd p` respectively. You can also write `p.fst` and `p.snd`.
-For more information: [Constructors with Arguments](https://leanprover.github.io/theorem_proving_in_lean4/inductive_types.html?highlight=Prod#constructors-with-arguments)
+For more information: [Constructors with Arguments](https://lean-lang.org/theorem_proving_in_lean4/inductive_types.html?highlight=Prod#constructors-with-arguments)
 -/
 structure Prod (α : Type u) (β : Type v) where
+  /-- Constructs a pair from two terms. -/
+  mk ::
   /-- The first projection out of a pair. if `p : α × β` then `p.1 : α`. -/
   fst : α
   /-- The second projection out of a pair. if `p : α × β` then `p.2 : β`. -/
@@ -473,6 +491,7 @@ attribute [unbox] Prod
 
 /--
 Similar to `Prod`, but `α` and `β` can be propositions.
+You can use `α ×' β` as notation for `PProd α β`.
 We use this type internally to automatically generate the `brecOn` recursor.
 -/
 structure PProd (α : Sort u) (β : Sort v) where
@@ -496,6 +515,7 @@ structure MProd (α β : Type u) where
 constructed and destructed like a pair: if `ha : a` and `hb : b` then
 `⟨ha, hb⟩ : a ∧ b`, and if `h : a ∧ b` then `h.left : a` and `h.right : b`.
 -/
+@[pp_using_anonymous_constructor]
 structure And (a b : Prop) : Prop where
   /-- `And.intro : a → b → a ∧ b` is the constructor for the And operation. -/
   intro ::
@@ -535,6 +555,11 @@ theorem Or.elim {c : Prop} (h : Or a b) (left : a → c) (right : b → c) : c :
   | Or.inl h => left h
   | Or.inr h => right h
 
+theorem Or.resolve_left  (h: Or a b) (na : Not a) : b := h.elim (absurd · na) id
+theorem Or.resolve_right (h: Or a b) (nb : Not b) : a := h.elim id (absurd · nb)
+theorem Or.neg_resolve_left  (h : Or (Not a) b) (ha : a) : b := h.elim (absurd ha) id
+theorem Or.neg_resolve_right (h : Or a (Not b)) (nb : b) : a := h.elim id (absurd nb)
+
 /--
 `Bool` is the type of boolean values, `true` and `false`. Classically,
 this is equivalent to `Prop` (the type of propositions), but the distinction
@@ -557,6 +582,7 @@ a pair-like type, so if you have `x : α` and `h : p x` then
 `⟨x, h⟩ : {x // p x}`. An element `s : {x // p x}` will coerce to `α` but
 you can also make it explicit using `s.1` or `s.val`.
 -/
+@[pp_using_anonymous_constructor]
 structure Subtype {α : Sort u} (p : α → Prop) where
   /-- If `s : {x // p x}` then `s.val : α` is the underlying element in the base
   type. You can also write this as `s.1`, or simply as `s` when the type is
@@ -584,7 +610,7 @@ For example, the `Membership` class is defined as:
 class Membership (α : outParam (Type u)) (γ : Type v)
 ```
 This means that whenever a typeclass goal of the form `Membership ?α ?γ` comes
-up, lean will wait to solve it until `?γ` is known, but then it will run
+up, Lean will wait to solve it until `?γ` is known, but then it will run
 typeclass inference, and take the first solution it finds, for any value of `?α`,
 which thereby determines what `?α` should be.
 
@@ -622,23 +648,22 @@ set_option linter.unusedVariables.funArgs false in
 @[reducible] def namedPattern {α : Sort u} (x a : α) (h : Eq x a) : α := a
 
 /--
-Auxiliary axiom used to implement `sorry`.
+Auxiliary axiom used to implement the `sorry` term and tactic.
 
-The `sorry` term/tactic expands to `sorryAx _ (synthetic := false)`. This is a
-proof of anything, which is intended for stubbing out incomplete parts of a
-proof while still having a syntactically correct proof skeleton. Lean will give
-a warning whenever a proof uses `sorry`, so you aren't likely to miss it, but
-you can double check if a theorem depends on `sorry` by using
-`#print axioms my_thm` and looking for `sorryAx` in the axiom list.
+The `sorry` term/tactic expands to `sorryAx _ (synthetic := false)`.
+It is intended for stubbing-out incomplete parts of a value or proof while still having a syntactically correct skeleton.
+Lean will give a warning whenever a declaration uses `sorry`, so you aren't likely to miss it,
+but you can check if a declaration depends on `sorry` either directly or indirectly by looking for `sorryAx` in the output
+of the `#print axioms my_thm` command.
 
-The `synthetic` flag is false when written explicitly by the user, but it is
+The `synthetic` flag is false when a `sorry` is written explicitly by the user, but it is
 set to `true` when a tactic fails to prove a goal, or if there is a type error
 in the expression. A synthetic `sorry` acts like a regular one, except that it
-suppresses follow-up errors in order to prevent one error from causing a cascade
+suppresses follow-up errors in order to prevent an error from causing a cascade
 of other errors because the desired term was not constructed.
 -/
 @[extern "lean_sorry", never_extract]
-axiom sorryAx (α : Sort u) (synthetic := false) : α
+axiom sorryAx (α : Sort u) (synthetic : Bool) : α
 
 theorem eq_false_of_ne_true : {b : Bool} → Not (Eq b true) → Eq b false
   | true, h => False.elim (h rfl)
@@ -699,13 +724,13 @@ nonempty, then `fun i => Classical.choice (h i) : ∀ i, α i` is a family of
 chosen elements. This is actually a bit stronger than the ZFC choice axiom;
 this is sometimes called "[global choice](https://en.wikipedia.org/wiki/Axiom_of_global_choice)".
 
-In lean, we use the axiom of choice to derive the law of excluded middle
+In Lean, we use the axiom of choice to derive the law of excluded middle
 (see `Classical.em`), so it will often show up in axiom listings where you
 may not expect. You can use `#print axioms my_thm` to find out if a given
 theorem depends on this or other axioms.
 
 This axiom can be used to construct "data", but obviously there is no algorithm
-to compute it, so lean will require you to mark any definition that would
+to compute it, so Lean will require you to mark any definition that would
 involve executing `Classical.choice` or other axioms as `noncomputable`, and
 will not produce any executable code for such definitions.
 -/
@@ -717,7 +742,7 @@ prove `p` given any element `x : α`, then `p` holds. Note that it is essential
 that `p` is a `Prop` here; the version with `p` being a `Sort u` is equivalent
 to `Classical.choice`.
 -/
-protected def Nonempty.elim {α : Sort u} {p : Prop} (h₁ : Nonempty α) (h₂ : α → p) : p :=
+protected theorem Nonempty.elim {α : Sort u} {p : Prop} (h₁ : Nonempty α) (h₂ : α → p) : p :=
   match h₁ with
   | intro a => h₂ a
 
@@ -731,10 +756,11 @@ infer the proof of `Nonempty α`.
 noncomputable def Classical.ofNonempty {α : Sort u} [Nonempty α] : α :=
   Classical.choice inferInstance
 
-instance (α : Sort u) {β : Sort v} [Nonempty β] : Nonempty (α → β) :=
+instance {α : Sort u} {β : Sort v} [Nonempty β] : Nonempty (α → β) :=
   Nonempty.intro fun _ => Classical.ofNonempty
 
-instance (α : Sort u) {β : α → Sort v} [(a : α) → Nonempty (β a)] : Nonempty ((a : α) → β a) :=
+instance Pi.instNonempty {α : Sort u} {β : α → Sort v} [(a : α) → Nonempty (β a)] :
+    Nonempty ((a : α) → β a) :=
   Nonempty.intro fun _ => Classical.ofNonempty
 
 instance : Inhabited (Sort u) where
@@ -743,7 +769,8 @@ instance : Inhabited (Sort u) where
 instance (α : Sort u) {β : Sort v} [Inhabited β] : Inhabited (α → β) where
   default := fun _ => default
 
-instance (α : Sort u) {β : α → Sort v} [(a : α) → Inhabited (β a)] : Inhabited ((a : α) → β a) where
+instance Pi.instInhabited {α : Sort u} {β : α → Sort v} [(a : α) → Inhabited (β a)] :
+    Inhabited ((a : α) → β a) where
   default := fun _ => default
 
 deriving instance Inhabited for Bool
@@ -806,6 +833,12 @@ decidability instance instead of the proposition, which has no code).
 
 If a proposition `p` is `Decidable`, then `(by decide : p)` will prove it by
 evaluating the decidability instance to `isTrue h` and returning `h`.
+
+Because `Decidable` carries data,
+when writing `@[simp]` lemmas which include a `Decidable` instance on the LHS,
+it is best to use `{_ : Decidable p}` rather than `[Decidable p]`
+so that non-canonical instances can be found via unification rather than
+typeclass search.
 -/
 class inductive Decidable (p : Prop) where
   /-- Prove that `p` is decidable by supplying a proof of `¬p` -/
@@ -829,8 +862,8 @@ abbrev DecidablePred {α : Sort u} (r : α → Prop) :=
   (a : α) → Decidable (r a)
 
 /-- A decidable relation. See `Decidable`. -/
-abbrev DecidableRel {α : Sort u} (r : α → α → Prop) :=
-  (a b : α) → Decidable (r a b)
+abbrev DecidableRel {α : Sort u} {β : Sort v} (r : α → β → Prop) :=
+  (a : α) → (b : β) → Decidable (r a b)
 
 /--
 Asserts that `α` has decidable equality, that is, `a = b` is decidable
@@ -885,6 +918,9 @@ is `Bool` valued instead of `Prop` valued, and it also does not have any
 axioms like being reflexive or agreeing with `=`. It is mainly intended for
 programming applications. See `LawfulBEq` for a version that requires that
 `==` and `=` coincide.
+
+Typically we prefer to put the "more variable" term on the left,
+and the "more constant" term on the right.
 -/
 class BEq (α : Type u) where
   /-- Boolean equality, notated as `a == b`. -/
@@ -904,8 +940,8 @@ and `e` can depend on `h : ¬c`. (Both branches use the same name for the hypoth
 even though it has different types in the two cases.)
 
 We use this to be able to communicate the if-then-else condition to the branches.
-For example, `Array.get arr ⟨i, h⟩` expects a proof `h : i < arr.size` in order to
-avoid a bounds check, so you can write `if h : i < arr.size then arr.get ⟨i, h⟩ else ...`
+For example, `Array.get arr i h` expects a proof `h : i < arr.size` in order to
+avoid a bounds check, so you can write `if h : i < arr.size then arr.get i h else ...`
 to avoid the bounds check inside the if branch. (Of course in this case we have only
 lifted the check into an explicit `if`, but we could also use this proof multiple times
 or derive `i < arr.size` from some other proposition that we are checking in the `if`.)
@@ -920,9 +956,12 @@ or derive `i < arr.size` from some other proposition that we are checking in the
 return `t` or `e` depending on whether `c` is true or false. The explicit argument
 `c : Prop` does not have any actual computational content, but there is an additional
 `[Decidable c]` argument synthesized by typeclass inference which actually
-determines how to evaluate `c` to true or false.
-
-Because lean uses a strict (call-by-value) evaluation strategy, the signature of this
+determines how to evaluate `c` to true or false. Write `if h : c then t else e`
+instead for a "dependent if-then-else" `dite`, which allows `t`/`e` to use the fact
+that `c` is true/false.
+-/
+/-
+Because Lean uses a strict (call-by-value) evaluation strategy, the signature of this
 function is problematic in that it would require `t` and `e` to be evaluated before
 calling the `ite` function, which would cause both sides of the `if` to be evaluated.
 Even if the result is discarded, this would be a big performance problem,
@@ -979,7 +1018,7 @@ with `Or : Prop → Prop → Prop`, which is the propositional connective).
 It is `@[macro_inline]` because it has C-like short-circuiting behavior:
 if `x` is true then `y` is not evaluated.
 -/
-@[macro_inline] def or (x y : Bool) : Bool :=
+@[macro_inline] def Bool.or (x y : Bool) : Bool :=
   match x with
   | true  => true
   | false => y
@@ -990,7 +1029,7 @@ with `And : Prop → Prop → Prop`, which is the propositional connective).
 It is `@[macro_inline]` because it has C-like short-circuiting behavior:
 if `x` is false then `y` is not evaluated.
 -/
-@[macro_inline] def and (x y : Bool) : Bool :=
+@[macro_inline] def Bool.and (x y : Bool) : Bool :=
   match x with
   | false => false
   | true  => y
@@ -999,9 +1038,11 @@ if `x` is false then `y` is not evaluated.
 `not x`, or `!x`, is the boolean "not" operation (not to be confused
 with `Not : Prop → Prop`, which is the propositional connective).
 -/
-@[inline] def not : Bool → Bool
+@[inline] def Bool.not : Bool → Bool
   | true  => false
   | false => true
+
+export Bool (or and not)
 
 /--
 The type of natural numbers, starting at zero. It is defined as an
@@ -1012,7 +1053,7 @@ You can prove a theorem `P n` about `n : Nat` by `induction n`, which will
 expect a proof of the theorem for `P 0`, and a proof of `P (succ i)` assuming
 a proof of `P i`. The same method also works to define functions by recursion
 on natural numbers: induction and recursion are two expressions of the same
-operation from lean's point of view.
+operation from Lean's point of view.
 
 ```
 open Nat
@@ -1036,11 +1077,15 @@ This type is special-cased by both the kernel and the compiler:
   library (usually [GMP](https://gmplib.org/)).
 -/
 inductive Nat where
-  /-- `Nat.zero`, normally written `0 : Nat`, is the smallest natural number.
-  This is one of the two constructors of `Nat`. -/
+  /-- `Nat.zero`, is the smallest natural number. This is one of the two
+  constructors of `Nat`. Using `Nat.zero` should usually be avoided in favor of
+  `0 : Nat` or simply `0`, in order to remain compatible with the simp normal
+  form defined by `Nat.zero_eq`. -/
   | zero : Nat
   /-- The successor function on natural numbers, `succ n = n + 1`.
-  This is one of the two constructors of `Nat`. -/
+  This is one of the two constructors of `Nat`. Using `succ n` should usually
+  be avoided in favor of `n + 1`, in order to remain compatible with the simp
+  normal form defined by `Nat.succ_eq_add_one`. -/
   | succ (n : Nat) : Nat
 
 instance : Inhabited Nat where
@@ -1048,14 +1093,14 @@ instance : Inhabited Nat where
 
 /--
 The class `OfNat α n` powers the numeric literal parser. If you write
-`37 : α`, lean will attempt to synthesize `OfNat α 37`, and will generate
+`37 : α`, Lean will attempt to synthesize `OfNat α 37`, and will generate
 the term `(OfNat.ofNat 37 : α)`.
 
 There is a bit of infinite regress here since the desugaring apparently
 still contains a literal `37` in it. The type of expressions contains a
 primitive constructor for "raw natural number literals", which you can directly
 access using the macro `nat_lit 37`. Raw number literals are always of type `Nat`.
-So it would be more correct to say that lean looks for an instance of
+So it would be more correct to say that Lean looks for an instance of
 `OfNat α (nat_lit 37)`, and it generates the term `(OfNat.ofNat (nat_lit 37) : α)`.
 -/
 class OfNat (α : Type u) (_ : Nat) where
@@ -1066,7 +1111,7 @@ class OfNat (α : Type u) (_ : Nat) where
   ofNat : α
 
 @[default_instance 100] /- low prio -/
-instance (n : Nat) : OfNat Nat n where
+instance instOfNatNat (n : Nat) : OfNat Nat n where
   ofNat := n
 
 /-- `LE α` is the typeclass which supports the notation `x ≤ y` where `x y : α`.-/
@@ -1083,6 +1128,11 @@ class LT (α : Type u) where
 @[reducible] def GE.ge {α : Type u} [LE α] (a b : α) : Prop := LE.le b a
 /-- `a > b` is an abbreviation for `b < a`. -/
 @[reducible] def GT.gt {α : Type u} [LT α] (a b : α) : Prop := LT.lt b a
+
+/-- Abbreviation for `DecidableRel (· < · : α → α → Prop)`. -/
+abbrev DecidableLT (α : Type u) [LT α] := DecidableRel (LT.lt : α → α → Prop)
+/-- Abbreviation for `DecidableRel (· ≤ · : α → α → Prop)`. -/
+abbrev DecidableLE (α : Type u) [LE α] := DecidableRel (LE.le : α → α → Prop)
 
 /-- `Max α` is the typeclass which supports the operation `max x y` where `x y : α`.-/
 class Max (α : Type u) where
@@ -1167,7 +1217,12 @@ class HDiv (α : Type u) (β : Type v) (γ : outParam (Type w)) where
   /-- `a / b` computes the result of dividing `a` by `b`.
   The meaning of this notation is type-dependent.
   * For most types like `Nat`, `Int`, `Rat`, `Real`, `a / 0` is defined to be `0`.
-  * For `Nat` and `Int`, `a / b` rounds toward 0.
+  * For `Nat`, `a / b` rounds downwards.
+  * For `Int`, `a / b` rounds downwards if `b` is positive or upwards if `b` is negative.
+    It is implemented as `Int.ediv`, the unique function satisfying
+    `a % b + b * (a / b) = a` and `0 ≤ a % b < natAbs b` for `b ≠ 0`.
+    Other rounding conventions are available using the functions
+    `Int.fdiv` (floor rounding) and `Int.tdiv` (truncation rounding).
   * For `Float`, `a / 0` follows the IEEE 754 semantics for division,
     usually resulting in `inf` or `nan`. -/
   hDiv : α → β → γ
@@ -1179,7 +1234,8 @@ This enables the notation `a % b : γ` where `a : α`, `b : β`.
 class HMod (α : Type u) (β : Type v) (γ : outParam (Type w)) where
   /-- `a % b` computes the remainder upon dividing `a` by `b`.
   The meaning of this notation is type-dependent.
-  * For `Nat` and `Int`, `a % 0` is defined to be `a`. -/
+  * For `Nat` and `Int` it satisfies `a % b + b * (a / b) = a`,
+    and `a % 0` is defined to be `a`. -/
   hMod : α → β → γ
 
 /--
@@ -1259,6 +1315,11 @@ class HShiftRight (α : Type u) (β : Type v) (γ : outParam (Type w)) where
     this is equivalent to `a / 2 ^ b`. -/
   hShiftRight : α → β → γ
 
+/-- A type with a zero element. -/
+class Zero (α : Type u) where
+  /-- The zero element of the type. -/
+  zero : α
+
 /-- The homogeneous version of `HAdd`: `a + b : α` where `a b : α`. -/
 class Add (α : Type u) where
   /-- `a + b` computes the sum of `a` and `b`. See `HAdd`. -/
@@ -1293,14 +1354,46 @@ class Mod (α : Type u) where
   /-- `a % b` computes the remainder upon dividing `a` by `b`. See `HMod`. -/
   mod : α → α → α
 
+/-- Notation typeclass for the `∣` operation (typed as `\|`), which represents divisibility. -/
+class Dvd (α : Type _) where
+  /-- Divisibility. `a ∣ b` (typed as `\|`) means that there is some `c` such that `b = a * c`. -/
+  dvd : α → α → Prop
+
 /--
 The homogeneous version of `HPow`: `a ^ b : α` where `a : α`, `b : β`.
 (The right argument is not the same as the left since we often want this even
 in the homogeneous case.)
+
+Types can choose to subscribe to particular defaulting behavior by providing
+an instance to either `NatPow` or `HomogeneousPow`:
+- `NatPow` is for types whose exponents is preferentially a `Nat`.
+- `HomogeneousPow` is for types whose base and exponent are preferentially the same.
 -/
 class Pow (α : Type u) (β : Type v) where
   /-- `a ^ b` computes `a` to the power of `b`. See `HPow`. -/
   pow : α → β → α
+
+/-- The homogeneous version of `Pow` where the exponent is a `Nat`.
+The purpose of this class is that it provides a default `Pow` instance,
+which can be used to specialize the exponent to `Nat` during elaboration.
+
+For example, if `x ^ 2` should preferentially elaborate with `2 : Nat` then `x`'s type should
+provide an instance for this class. -/
+class NatPow (α : Type u) where
+  /-- `a ^ n` computes `a` to the power of `n` where `n : Nat`. See `Pow`. -/
+  protected pow : α → Nat → α
+
+/-- The completely homogeneous version of `Pow` where the exponent has the same type as the base.
+The purpose of this class is that it provides a default `Pow` instance,
+which can be used to specialize the exponent to have the same type as the base's type during elaboration.
+This is to say, a type should provide an instance for this class in case `x ^ y` should be elaborated
+with both `x` and `y` having the same type.
+
+For example, the `Float` type provides an instance of this class, which causes expressions
+such as `(2.2 ^ 2.2 : Float)` to elaborate. -/
+class HomogeneousPow (α : Type u) where
+  /-- `a ^ b` computes `a` to the power of `b` where `a` and `b` both have the same type. -/
+  protected pow : α → α → α
 
 /-- The homogeneous version of `HAppend`: `a ++ b : α` where `a b : α`. -/
 class Append (α : Type u) where
@@ -1362,28 +1455,36 @@ class ShiftRight (α : Type u) where
   shiftRight : α → α → α
 
 @[default_instance]
-instance [Add α] : HAdd α α α where
+instance instHAdd [Add α] : HAdd α α α where
   hAdd a b := Add.add a b
 
 @[default_instance]
-instance [Sub α] : HSub α α α where
+instance instHSub [Sub α] : HSub α α α where
   hSub a b := Sub.sub a b
 
 @[default_instance]
-instance [Mul α] : HMul α α α where
+instance instHMul [Mul α] : HMul α α α where
   hMul a b := Mul.mul a b
 
 @[default_instance]
-instance [Div α] : HDiv α α α where
+instance instHDiv [Div α] : HDiv α α α where
   hDiv a b := Div.div a b
 
 @[default_instance]
-instance [Mod α] : HMod α α α where
+instance instHMod [Mod α] : HMod α α α where
   hMod a b := Mod.mod a b
 
 @[default_instance]
-instance [Pow α β] : HPow α β α where
+instance instHPow [Pow α β] : HPow α β α where
   hPow a b := Pow.pow a b
+
+@[default_instance]
+instance instPowNat [NatPow α] : Pow α Nat where
+  pow a n := NatPow.pow a n
+
+@[default_instance]
+instance [HomogeneousPow α] : Pow α α where
+  pow a b := HomogeneousPow.pow a b
 
 @[default_instance]
 instance [Append α] : HAppend α α α where
@@ -1418,6 +1519,7 @@ instance [ShiftRight α] : HShiftRight α α α where
   hShiftRight a b := ShiftRight.shiftRight a b
 
 open HAdd (hAdd)
+open HSub (hSub)
 open HMul (hMul)
 open HPow (hPow)
 open HAppend (hAppend)
@@ -1429,7 +1531,7 @@ of the elements of the container.
 -/
 class Membership (α : outParam (Type u)) (γ : Type v) where
   /-- The membership relation `a ∈ s : Prop` where `a : α`, `s : γ`. -/
-  mem : α → γ → Prop
+  mem : γ → α → Prop
 
 set_option bootstrap.genMatcherCode false in
 /--
@@ -1444,12 +1546,12 @@ protected def Nat.add : (@& Nat) → (@& Nat) → Nat
   | a, Nat.zero   => a
   | a, Nat.succ b => Nat.succ (Nat.add a b)
 
-instance : Add Nat where
+instance instAddNat : Add Nat where
   add := Nat.add
 
 /- We mark the following definitions as pattern to make sure they can be used in recursive equations,
    and reduced by the equation Compiler. -/
-attribute [match_pattern] Nat.add Add.add HAdd.hAdd Neg.neg
+attribute [match_pattern] Nat.add Add.add HAdd.hAdd Neg.neg Mul.mul HMul.hMul
 
 set_option bootstrap.genMatcherCode false in
 /--
@@ -1464,7 +1566,7 @@ protected def Nat.mul : (@& Nat) → (@& Nat) → Nat
   | _, 0          => 0
   | a, Nat.succ b => Nat.add (Nat.mul a b) a
 
-instance : Mul Nat where
+instance instMulNat : Mul Nat where
   mul := Nat.mul
 
 set_option bootstrap.genMatcherCode false in
@@ -1480,8 +1582,7 @@ protected def Nat.pow (m : @& Nat) : (@& Nat) → Nat
   | 0      => 1
   | succ n => Nat.mul (Nat.pow m n) m
 
-instance : Pow Nat Nat where
-  pow := Nat.pow
+instance instNatPowNat : NatPow Nat := ⟨Nat.pow⟩
 
 set_option bootstrap.genMatcherCode false in
 /--
@@ -1497,9 +1598,6 @@ def Nat.beq : (@& Nat) → (@& Nat) → Bool
   | zero,   succ _ => false
   | succ _, zero   => false
   | succ n, succ m => beq n m
-
-instance : BEq Nat where
-  beq := Nat.beq
 
 theorem Nat.eq_of_beq_eq_true : {n m : Nat} → Eq (beq n m) true → Eq n m
   | zero,   zero,   _ => rfl
@@ -1558,19 +1656,19 @@ protected inductive Nat.le (n : Nat) : Nat → Prop
   /-- If `n ≤ m`, then `n ≤ m + 1`. -/
   | step {m} : Nat.le n m → Nat.le n (succ m)
 
-instance : LE Nat where
+instance instLENat : LE Nat where
   le := Nat.le
 
 /-- The strict less than relation on natural numbers is defined as `n < m := n + 1 ≤ m`. -/
 protected def Nat.lt (n m : Nat) : Prop :=
   Nat.le (succ n) m
 
-instance : LT Nat where
+instance instLTNat : LT Nat where
   lt := Nat.lt
 
 theorem Nat.not_succ_le_zero : ∀ (n : Nat), LE.le (succ n) 0 → False
-  | 0,      h => nomatch h
-  | succ _, h => nomatch h
+  | 0      => nofun
+  | succ _ => nofun
 
 theorem Nat.not_lt_zero (n : Nat) : Not (LT.lt n 0) :=
   not_succ_le_zero n
@@ -1717,7 +1815,7 @@ protected def Nat.sub : (@& Nat) → (@& Nat) → Nat
   | a, 0      => a
   | a, succ b => pred (Nat.sub a b)
 
-instance : Sub Nat where
+instance instSubNat : Sub Nat where
   sub := Nat.sub
 
 /--
@@ -1725,7 +1823,7 @@ Gets the word size of the platform. That is, whether the platform is 64 or 32 bi
 
 This function is opaque because we cannot guarantee at compile time that the target
 will have the same size as the host, and also because we would like to avoid
-typechecking being architecture-dependent. Nevertheless, lean only works on
+typechecking being architecture-dependent. Nevertheless, Lean only works on
 64 and 32 bit systems so we can encode this as a fact available for proof purposes.
 -/
 @[extern "lean_system_platform_nbits"] opaque System.Platform.getNumBits : Unit → Subtype fun (n : Nat) => Or (Eq n 32) (Eq n 64) :=
@@ -1742,12 +1840,17 @@ theorem System.Platform.numBits_eq : Or (Eq numBits 32) (Eq numBits 64) :=
 `Fin n` is a natural number `i` with the constraint that `0 ≤ i < n`.
 It is the "canonical type with `n` elements".
 -/
+@[pp_using_anonymous_constructor]
 structure Fin (n : Nat) where
+  /-- Creates a `Fin n` from `i : Nat` and a proof that `i < n`. -/
+  mk ::
   /-- If `i : Fin n`, then `i.val : ℕ` is the described number. It can also be
   written as `i.1` or just `i` when the target type is known. -/
   val  : Nat
   /-- If `i : Fin n`, then `i.2` is a proof that `i.1 < n`. -/
   isLt : LT.lt val n
+
+attribute [coe] Fin.val
 
 theorem Fin.eq_of_val_eq {n} : ∀ {i j : Fin n}, Eq i.val j.val → Eq i j
   | ⟨_, _⟩, ⟨_, _⟩, rfl => rfl
@@ -1755,14 +1858,11 @@ theorem Fin.eq_of_val_eq {n} : ∀ {i j : Fin n}, Eq i.val j.val → Eq i j
 theorem Fin.val_eq_of_eq {n} {i j : Fin n} (h : Eq i j) : Eq i.val j.val :=
   h ▸ rfl
 
-theorem Fin.ne_of_val_ne {n} {i j : Fin n} (h : Not (Eq i.val j.val)) : Not (Eq i j) :=
-  fun h' => absurd (val_eq_of_eq h') h
-
 instance (n : Nat) : DecidableEq (Fin n) :=
   fun i j =>
     match decEq i.val j.val with
     | isTrue h  => isTrue (Fin.eq_of_val_eq h)
-    | isFalse h => isFalse (Fin.ne_of_val_ne h)
+    | isFalse h => isFalse (fun h' => absurd (Fin.val_eq_of_eq h') h)
 
 instance {n} : LT (Fin n) where
   lt a b := LT.lt a.val b.val
@@ -1773,20 +1873,66 @@ instance {n} : LE (Fin n) where
 instance Fin.decLt {n} (a b : Fin n) : Decidable (LT.lt a b) := Nat.decLt ..
 instance Fin.decLe {n} (a b : Fin n) : Decidable (LE.le a b) := Nat.decLe ..
 
+/--
+A bitvector of the specified width.
+
+This is represented as the underlying `Nat` number in both the runtime
+and the kernel, inheriting all the special support for `Nat`.
+-/
+structure BitVec (w : Nat) where
+  /-- Construct a `BitVec w` from a number less than `2^w`.
+  O(1), because we use `Fin` as the internal representation of a bitvector. -/
+  ofFin ::
+  /-- Interpret a bitvector as a number less than `2^w`.
+  O(1), because we use `Fin` as the internal representation of a bitvector. -/
+  toFin : Fin (hPow 2 w)
+
+/--
+Bitvectors have decidable equality. This should be used via the instance `DecidableEq (BitVec n)`.
+-/
+-- We manually derive the `DecidableEq` instances for `BitVec` because
+-- we want to have builtin support for bit-vector literals, and we
+-- need a name for this function to implement `canUnfoldAtMatcher` at `WHNF.lean`.
+def BitVec.decEq (x y : BitVec n) : Decidable (Eq x y) :=
+  match x, y with
+  | ⟨n⟩, ⟨m⟩ =>
+    dite (Eq n m)
+      (fun h => isTrue (h ▸ rfl))
+      (fun h => isFalse (fun h' => BitVec.noConfusion h' (fun h' => absurd h' h)))
+
+instance : DecidableEq (BitVec n) := BitVec.decEq
+
+/-- The `BitVec` with value `i`, given a proof that `i < 2^n`. -/
+@[match_pattern]
+protected def BitVec.ofNatLt {n : Nat} (i : Nat) (p : LT.lt i (hPow 2 n)) : BitVec n where
+  toFin := ⟨i, p⟩
+
+/-- Given a bitvector `x`, return the underlying `Nat`. This is O(1) because `BitVec` is a
+(zero-cost) wrapper around a `Nat`. -/
+protected def BitVec.toNat (x : BitVec n) : Nat := x.toFin.val
+
+instance : LT (BitVec n) where lt := (LT.lt ·.toNat ·.toNat)
+instance (x y : BitVec n) : Decidable (LT.lt x y) :=
+  inferInstanceAs (Decidable (LT.lt x.toNat y.toNat))
+
+instance : LE (BitVec n) where le := (LE.le ·.toNat ·.toNat)
+instance (x y : BitVec n) : Decidable (LE.le x y) :=
+  inferInstanceAs (Decidable (LE.le x.toNat y.toNat))
+
 /-- The size of type `UInt8`, that is, `2^8 = 256`. -/
-def UInt8.size : Nat := 256
+abbrev UInt8.size : Nat := 256
 
 /--
 The type of unsigned 8-bit integers. This type has special support in the
 compiler to make it actually 8 bits rather than wrapping a `Nat`.
 -/
 structure UInt8 where
-  /-- Unpack a `UInt8` as a `Nat` less than `2^8`.
+  /-- Unpack a `UInt8` as a `BitVec 8`.
   This function is overridden with a native implementation. -/
-  val : Fin UInt8.size
+  toBitVec : BitVec 8
 
 attribute [extern "lean_uint8_of_nat_mk"] UInt8.mk
-attribute [extern "lean_uint8_to_nat"] UInt8.val
+attribute [extern "lean_uint8_to_nat"] UInt8.toBitVec
 
 /--
 Pack a `Nat` less than `2^8` into a `UInt8`.
@@ -1794,7 +1940,7 @@ This function is overridden with a native implementation.
 -/
 @[extern "lean_uint8_of_nat"]
 def UInt8.ofNatCore (n : @& Nat) (h : LT.lt n UInt8.size) : UInt8 where
-  val := { val := n, isLt := h }
+  toBitVec := BitVec.ofNatLt n h
 
 set_option bootstrap.genMatcherCode false in
 /--
@@ -1805,27 +1951,29 @@ This function is overridden with a native implementation.
 def UInt8.decEq (a b : UInt8) : Decidable (Eq a b) :=
   match a, b with
   | ⟨n⟩, ⟨m⟩ =>
-    dite (Eq n m) (fun h => isTrue (h ▸ rfl)) (fun h => isFalse (fun h' => UInt8.noConfusion h' (fun h' => absurd h' h)))
+    dite (Eq n m)
+      (fun h => isTrue (h ▸ rfl))
+      (fun h => isFalse (fun h' => UInt8.noConfusion h' (fun h' => absurd h' h)))
 
 instance : DecidableEq UInt8 := UInt8.decEq
 
 instance : Inhabited UInt8 where
-  default := UInt8.ofNatCore 0 (by decide)
+  default := UInt8.ofNatCore 0 (of_decide_eq_true rfl)
 
 /-- The size of type `UInt16`, that is, `2^16 = 65536`. -/
-def UInt16.size : Nat := 65536
+abbrev UInt16.size : Nat := 65536
 
 /--
 The type of unsigned 16-bit integers. This type has special support in the
 compiler to make it actually 16 bits rather than wrapping a `Nat`.
 -/
 structure UInt16 where
-  /-- Unpack a `UInt16` as a `Nat` less than `2^16`.
+  /-- Unpack a `UInt16` as a `BitVec 16`.
   This function is overridden with a native implementation. -/
-  val : Fin UInt16.size
+  toBitVec : BitVec 16
 
 attribute [extern "lean_uint16_of_nat_mk"] UInt16.mk
-attribute [extern "lean_uint16_to_nat"] UInt16.val
+attribute [extern "lean_uint16_to_nat"] UInt16.toBitVec
 
 /--
 Pack a `Nat` less than `2^16` into a `UInt16`.
@@ -1833,7 +1981,7 @@ This function is overridden with a native implementation.
 -/
 @[extern "lean_uint16_of_nat"]
 def UInt16.ofNatCore (n : @& Nat) (h : LT.lt n UInt16.size) : UInt16 where
-  val := { val := n, isLt := h }
+  toBitVec := BitVec.ofNatLt n h
 
 set_option bootstrap.genMatcherCode false in
 /--
@@ -1844,27 +1992,29 @@ This function is overridden with a native implementation.
 def UInt16.decEq (a b : UInt16) : Decidable (Eq a b) :=
   match a, b with
   | ⟨n⟩, ⟨m⟩ =>
-    dite (Eq n m) (fun h => isTrue (h ▸ rfl)) (fun h => isFalse (fun h' => UInt16.noConfusion h' (fun h' => absurd h' h)))
+    dite (Eq n m)
+      (fun h => isTrue (h ▸ rfl))
+      (fun h => isFalse (fun h' => UInt16.noConfusion h' (fun h' => absurd h' h)))
 
 instance : DecidableEq UInt16 := UInt16.decEq
 
 instance : Inhabited UInt16 where
-  default := UInt16.ofNatCore 0 (by decide)
+  default := UInt16.ofNatCore 0 (of_decide_eq_true rfl)
 
 /-- The size of type `UInt32`, that is, `2^32 = 4294967296`. -/
-def UInt32.size : Nat := 4294967296
+abbrev UInt32.size : Nat := 4294967296
 
 /--
 The type of unsigned 32-bit integers. This type has special support in the
 compiler to make it actually 32 bits rather than wrapping a `Nat`.
 -/
 structure UInt32 where
-  /-- Unpack a `UInt32` as a `Nat` less than `2^32`.
+  /-- Unpack a `UInt32` as a `BitVec 32.
   This function is overridden with a native implementation. -/
-  val : Fin UInt32.size
+  toBitVec : BitVec 32
 
 attribute [extern "lean_uint32_of_nat_mk"] UInt32.mk
-attribute [extern "lean_uint32_to_nat"] UInt32.val
+attribute [extern "lean_uint32_to_nat"] UInt32.toBitVec
 
 /--
 Pack a `Nat` less than `2^32` into a `UInt32`.
@@ -1872,14 +2022,14 @@ This function is overridden with a native implementation.
 -/
 @[extern "lean_uint32_of_nat"]
 def UInt32.ofNatCore (n : @& Nat) (h : LT.lt n UInt32.size) : UInt32 where
-  val := { val := n, isLt := h }
+  toBitVec := BitVec.ofNatLt n h
 
 /--
 Unpack a `UInt32` as a `Nat`.
 This function is overridden with a native implementation.
 -/
 @[extern "lean_uint32_to_nat"]
-def UInt32.toNat (n : UInt32) : Nat := n.val.val
+def UInt32.toNat (n : UInt32) : Nat := n.toBitVec.toNat
 
 set_option bootstrap.genMatcherCode false in
 /--
@@ -1895,33 +2045,29 @@ def UInt32.decEq (a b : UInt32) : Decidable (Eq a b) :=
 instance : DecidableEq UInt32 := UInt32.decEq
 
 instance : Inhabited UInt32 where
-  default := UInt32.ofNatCore 0 (by decide)
+  default := UInt32.ofNatCore 0 (of_decide_eq_true rfl)
 
 instance : LT UInt32 where
-  lt a b := LT.lt a.val b.val
+  lt a b := LT.lt a.toBitVec b.toBitVec
 
 instance : LE UInt32 where
-  le a b := LE.le a.val b.val
+  le a b := LE.le a.toBitVec b.toBitVec
 
-set_option bootstrap.genMatcherCode false in
 /--
 Decides less-equal on `UInt32`.
 This function is overridden with a native implementation.
 -/
 @[extern "lean_uint32_dec_lt"]
 def UInt32.decLt (a b : UInt32) : Decidable (LT.lt a b) :=
-  match a, b with
-  | ⟨n⟩, ⟨m⟩ => inferInstanceAs (Decidable (LT.lt n m))
+  inferInstanceAs (Decidable (LT.lt a.toBitVec b.toBitVec))
 
-set_option bootstrap.genMatcherCode false in
 /--
 Decides less-than on `UInt32`.
 This function is overridden with a native implementation.
 -/
 @[extern "lean_uint32_dec_le"]
 def UInt32.decLe (a b : UInt32) : Decidable (LE.le a b) :=
-  match a, b with
-  | ⟨n⟩, ⟨m⟩ => inferInstanceAs (Decidable (LE.le n m))
+  inferInstanceAs (Decidable (LE.le a.toBitVec b.toBitVec))
 
 instance (a b : UInt32) : Decidable (LT.lt a b) := UInt32.decLt a b
 instance (a b : UInt32) : Decidable (LE.le a b) := UInt32.decLe a b
@@ -1929,18 +2075,18 @@ instance : Max UInt32 := maxOfLe
 instance : Min UInt32 := minOfLe
 
 /-- The size of type `UInt64`, that is, `2^64 = 18446744073709551616`. -/
-def UInt64.size : Nat := 18446744073709551616
+abbrev UInt64.size : Nat := 18446744073709551616
 /--
 The type of unsigned 64-bit integers. This type has special support in the
 compiler to make it actually 64 bits rather than wrapping a `Nat`.
 -/
 structure UInt64 where
-  /-- Unpack a `UInt64` as a `Nat` less than `2^64`.
+  /-- Unpack a `UInt64` as a `BitVec 64`.
   This function is overridden with a native implementation. -/
-  val : Fin UInt64.size
+  toBitVec: BitVec 64
 
 attribute [extern "lean_uint64_of_nat_mk"] UInt64.mk
-attribute [extern "lean_uint64_to_nat"] UInt64.val
+attribute [extern "lean_uint64_to_nat"] UInt64.toBitVec
 
 /--
 Pack a `Nat` less than `2^64` into a `UInt64`.
@@ -1948,7 +2094,7 @@ This function is overridden with a native implementation.
 -/
 @[extern "lean_uint64_of_nat"]
 def UInt64.ofNatCore (n : @& Nat) (h : LT.lt n UInt64.size) : UInt64 where
-  val := { val := n, isLt := h }
+  toBitVec := BitVec.ofNatLt n h
 
 set_option bootstrap.genMatcherCode false in
 /--
@@ -1959,24 +2105,28 @@ This function is overridden with a native implementation.
 def UInt64.decEq (a b : UInt64) : Decidable (Eq a b) :=
   match a, b with
   | ⟨n⟩, ⟨m⟩ =>
-    dite (Eq n m) (fun h => isTrue (h ▸ rfl)) (fun h => isFalse (fun h' => UInt64.noConfusion h' (fun h' => absurd h' h)))
+    dite (Eq n m)
+      (fun h => isTrue (h ▸ rfl))
+      (fun h => isFalse (fun h' => UInt64.noConfusion h' (fun h' => absurd h' h)))
 
 instance : DecidableEq UInt64 := UInt64.decEq
 
 instance : Inhabited UInt64 where
-  default := UInt64.ofNatCore 0 (by decide)
+  default := UInt64.ofNatCore 0 (of_decide_eq_true rfl)
 
-/--
-The size of type `UInt16`, that is, `2^System.Platform.numBits`, which may
-be either `2^32` or `2^64` depending on the platform's architecture.
--/
-def USize.size : Nat := hPow 2 System.Platform.numBits
+/-- The size of type `USize`, that is, `2^System.Platform.numBits`. -/
+abbrev USize.size : Nat := (hPow 2 System.Platform.numBits)
 
 theorem usize_size_eq : Or (Eq USize.size 4294967296) (Eq USize.size 18446744073709551616) :=
   show Or (Eq (hPow 2 System.Platform.numBits) 4294967296) (Eq (hPow 2 System.Platform.numBits) 18446744073709551616) from
   match System.Platform.numBits, System.Platform.numBits_eq with
-  | _, Or.inl rfl => Or.inl (by decide)
-  | _, Or.inr rfl => Or.inr (by decide)
+  | _, Or.inl rfl => Or.inl (of_decide_eq_true rfl)
+  | _, Or.inr rfl => Or.inr (of_decide_eq_true rfl)
+
+theorem usize_size_pos : LT.lt 0 USize.size :=
+  match USize.size, usize_size_eq with
+  | _, Or.inl rfl => of_decide_eq_true rfl
+  | _, Or.inr rfl => of_decide_eq_true rfl
 
 /--
 A `USize` is an unsigned integer with the size of a word
@@ -1986,21 +2136,20 @@ For example, if running on a 32-bit machine, USize is equivalent to UInt32.
 Or on a 64-bit machine, UInt64.
 -/
 structure USize where
-  /-- Unpack a `USize` as a `Nat` less than `USize.size`.
+  /-- Unpack a `USize` as a `BitVec System.Platform.numBits`.
   This function is overridden with a native implementation. -/
-  val : Fin USize.size
+  toBitVec : BitVec System.Platform.numBits
 
 attribute [extern "lean_usize_of_nat_mk"] USize.mk
-attribute [extern "lean_usize_to_nat"] USize.val
+attribute [extern "lean_usize_to_nat"] USize.toBitVec
 
 /--
 Pack a `Nat` less than `USize.size` into a `USize`.
 This function is overridden with a native implementation.
 -/
 @[extern "lean_usize_of_nat"]
-def USize.ofNatCore (n : @& Nat) (h : LT.lt n USize.size) : USize := {
-  val := { val := n, isLt := h }
-}
+def USize.ofNatCore (n : @& Nat) (h : LT.lt n USize.size) : USize where
+  toBitVec := BitVec.ofNatLt n h
 
 set_option bootstrap.genMatcherCode false in
 /--
@@ -2011,29 +2160,14 @@ This function is overridden with a native implementation.
 def USize.decEq (a b : USize) : Decidable (Eq a b) :=
   match a, b with
   | ⟨n⟩, ⟨m⟩ =>
-    dite (Eq n m) (fun h =>isTrue (h ▸ rfl)) (fun h => isFalse (fun h' => USize.noConfusion h' (fun h' => absurd h' h)))
+    dite (Eq n m)
+      (fun h => isTrue (h ▸ rfl))
+      (fun h => isFalse (fun h' => USize.noConfusion h' (fun h' => absurd h' h)))
 
 instance : DecidableEq USize := USize.decEq
 
 instance : Inhabited USize where
-  default := USize.ofNatCore 0 (match USize.size, usize_size_eq with
-    | _, Or.inl rfl => by decide
-    | _, Or.inr rfl => by decide)
-
-/--
-Upcast a `Nat` less than `2^32` to a `USize`.
-This is lossless because `USize.size` is either `2^32` or `2^64`.
-This function is overridden with a native implementation.
--/
-@[extern "lean_usize_of_nat"]
-def USize.ofNat32 (n : @& Nat) (h : LT.lt n 4294967296) : USize where
-  val := {
-    val  := n
-    isLt := match USize.size, usize_size_eq with
-      | _, Or.inl rfl => h
-      | _, Or.inr rfl => Nat.lt_trans h (by decide)
-  }
-
+  default := USize.ofNatCore 0 usize_size_pos
 /--
 A `Nat` denotes a valid unicode codepoint if it is less than `0x110000`, and
 it is also not a "surrogate" character (the range `0xd800` to `0xdfff` inclusive).
@@ -2058,8 +2192,8 @@ structure Char where
 
 private theorem isValidChar_UInt32 {n : Nat} (h : n.isValidChar) : LT.lt n UInt32.size :=
   match h with
-  | Or.inl h      => Nat.lt_trans h (by decide)
-  | Or.inr ⟨_, h⟩ => Nat.lt_trans h (by decide)
+  | Or.inl h      => Nat.lt_trans h (of_decide_eq_true rfl)
+  | Or.inr ⟨_, h⟩ => Nat.lt_trans h (of_decide_eq_true rfl)
 
 /--
 Pack a `Nat` encoding a valid codepoint into a `Char`.
@@ -2067,7 +2201,7 @@ This function is overridden with a native implementation.
 -/
 @[extern "lean_uint32_of_nat"]
 def Char.ofNatAux (n : @& Nat) (h : n.isValidChar) : Char :=
-  { val := ⟨{ val := n, isLt := isValidChar_UInt32 h }⟩, valid := h }
+  { val := ⟨BitVec.ofNatLt n (isValidChar_UInt32 h)⟩, valid := h }
 
 /--
 Convert a `Nat` into a `Char`. If the `Nat` does not encode a valid unicode scalar value,
@@ -2077,7 +2211,7 @@ Convert a `Nat` into a `Char`. If the `Nat` does not encode a valid unicode scal
 def Char.ofNat (n : Nat) : Char :=
   dite (n.isValidChar)
     (fun h => Char.ofNatAux n h)
-    (fun _ => { val := ⟨{ val := 0, isLt := by decide }⟩, valid := Or.inl (by decide) })
+    (fun _ => { val := ⟨BitVec.ofNatLt 0 (of_decide_eq_true rfl)⟩, valid := Or.inl (of_decide_eq_true rfl) })
 
 theorem Char.eq_of_val_eq : ∀ {c d : Char}, Eq c.val d.val → Eq c d
   | ⟨_, _⟩, ⟨_, _⟩, rfl => rfl
@@ -2098,26 +2232,27 @@ instance : DecidableEq Char :=
     | isFalse h => isFalse (Char.ne_of_val_ne h)
 
 /-- Returns the number of bytes required to encode this `Char` in UTF-8. -/
-def Char.utf8Size (c : Char) : UInt32 :=
+def Char.utf8Size (c : Char) : Nat :=
   let v := c.val
-  ite (LE.le v (UInt32.ofNatCore 0x7F (by decide)))
-    (UInt32.ofNatCore 1 (by decide))
-    (ite (LE.le v (UInt32.ofNatCore 0x7FF (by decide)))
-      (UInt32.ofNatCore 2 (by decide))
-      (ite (LE.le v (UInt32.ofNatCore 0xFFFF (by decide)))
-        (UInt32.ofNatCore 3 (by decide))
-        (UInt32.ofNatCore 4 (by decide))))
+  ite (LE.le v (UInt32.ofNatCore 0x7F (of_decide_eq_true rfl))) 1
+    (ite (LE.le v (UInt32.ofNatCore 0x7FF (of_decide_eq_true rfl))) 2
+      (ite (LE.le v (UInt32.ofNatCore 0xFFFF (of_decide_eq_true rfl))) 3 4))
 
 /--
 `Option α` is the type of values which are either `some a` for some `a : α`,
 or `none`. In functional programming languages, this type is used to represent
 the possibility of failure, or sometimes nullability.
 
-For example, the function `HashMap.find? : HashMap α β → α → Option β` looks up
+For example, the function `HashMap.get? : HashMap α β → α → Option β` looks up
 a specified key `a : α` inside the map. Because we do not know in advance
 whether the key is actually in the map, the return type is `Option β`, where
 `none` means the value was not in the map, and `some b` means that the value
 was found and `b` is the value retrieved.
+
+The `xs[i]` syntax, which is used to index into collections, has a variant
+`xs[i]?` that returns an optional value depending on whether the given index
+is valid. For example, if `m : HashMap α β` and `a : α`, then `m[a]?` is
+equivalent to `HashMap.get? m a`.
 
 To extract a value from an `Option α`, we use pattern matching:
 ```
@@ -2156,9 +2291,10 @@ returns `a` if `opt = some a` and `dflt` otherwise.
 This function is `@[macro_inline]`, so `dflt` will not be evaluated unless
 `opt` turns out to be `none`.
 -/
-@[macro_inline] def Option.getD : Option α → α → α
-  | some x, _ => x
-  | none,   e => e
+@[macro_inline] def Option.getD (opt : Option α) (dflt : α) : α :=
+  match opt with
+  | some x => x
+  | none => dflt
 
 /--
 Map a function over an `Option` by applying the function to the contained
@@ -2205,24 +2341,6 @@ protected def List.hasDecEq {α : Type u} [DecidableEq α] : (a b : List α) →
 instance {α : Type u} [DecidableEq α] : DecidableEq (List α) := List.hasDecEq
 
 /--
-Folds a function over a list from the left:
-`foldl f z [a, b, c] = f (f (f z a) b) c`
--/
-@[specialize]
-def List.foldl {α : Type u} {β : Type v} (f : α → β → α) : (init : α) → List β → α
-  | a, nil      => a
-  | a, cons b l => foldl f (f a b) l
-
-/--
-`l.set n a` sets the value of list `l` at (zero-based) index `n` to `a`:
-`[a, b, c, d].set 1 b' = [a, b', c, d]`
--/
-def List.set : List α → Nat → α → List α
-  | cons _ as, 0,          b => cons b as
-  | cons a as, Nat.succ n, b => cons a (set as n b)
-  | nil,       _,          _ => nil
-
-/--
 The length of a list: `[].length = 0` and `(a :: l).length = l.length + 1`.
 
 This function is overridden in the compiler to `lengthTR`, which uses constant
@@ -2245,14 +2363,6 @@ without running out of stack space.
 def List.lengthTR (as : List α) : Nat :=
   lengthTRAux as 0
 
-@[simp] theorem List.length_cons {α} (a : α) (as : List α) : Eq (cons a as).length as.length.succ :=
-  rfl
-
-/-- `l.concat a` appends `a` at the *end* of `l`, that is, `l ++ [a]`. -/
-def List.concat {α : Type u} : List α → α → List α
-  | nil,       b => cons b nil
-  | cons a as, b => cons a (concat as b)
-
 /--
 `as.get i` returns the `i`'th element of the list `as`.
 This version of the function uses `i : Fin as.length` to ensure that it will
@@ -2261,6 +2371,29 @@ not index out of bounds.
 def List.get {α : Type u} : (as : List α) → Fin as.length → α
   | cons a _,  ⟨0, _⟩ => a
   | cons _ as, ⟨Nat.succ i, h⟩ => get as ⟨i, Nat.le_of_succ_le_succ h⟩
+
+/--
+`l.set n a` sets the value of list `l` at (zero-based) index `n` to `a`:
+`[a, b, c, d].set 1 b' = [a, b', c, d]`
+-/
+def List.set : List α → Nat → α → List α
+  | cons _ as, 0,          b => cons b as
+  | cons a as, Nat.succ n, b => cons a (set as n b)
+  | nil,       _,          _ => nil
+
+/--
+Folds a function over a list from the left:
+`foldl f z [a, b, c] = f (f (f z a) b) c`
+-/
+@[specialize]
+def List.foldl {α : Type u} {β : Type v} (f : α → β → α) : (init : α) → List β → α
+  | a, nil      => a
+  | a, cons b l => foldl f (f a b) l
+
+/-- `l.concat a` appends `a` at the *end* of `l`, that is, `l ++ [a]`. -/
+def List.concat {α : Type u} : List α → α → List α
+  | nil,       b => cons b nil
+  | cons a as, b => cons a (concat as b)
 
 /--
 `String` is the type of (UTF-8 encoded) strings.
@@ -2297,6 +2430,9 @@ Codepoint positions (counting the Unicode codepoints rather than bytes)
 are represented by plain `Nat`s instead.
 Indexing a `String` by a byte position is constant-time, while codepoint
 positions need to be translated internally to byte positions in linear-time.
+
+A byte position `p` is *valid* for a string `s` if `0 ≤ p ≤ s.endPos` and `p`
+lies on a UTF8 byte boundary.
 -/
 structure String.Pos where
   /-- Get the underlying byte index of a `String.Pos` -/
@@ -2331,10 +2467,6 @@ instance : Inhabited Substring where
 @[inline] def Substring.bsize : Substring → Nat
   | ⟨_, b, e⟩ => e.byteIdx.sub b.byteIdx
 
-/-- Returns the number of bytes required to encode this `Char` in UTF-8. -/
-def String.csize (c : Char) : Nat :=
-  c.utf8Size.toNat
-
 /--
 The UTF-8 byte length of this string.
 This is overridden by the compiler to be cached and O(1).
@@ -2345,7 +2477,7 @@ def String.utf8ByteSize : (@& String) → Nat
 where
   go : List Char → Nat
    | .nil       => 0
-   | .cons c cs => hAdd (go cs) (csize c)
+   | .cons c cs => hAdd (go cs) c.utf8Size
 
 instance : HAdd String.Pos String.Pos String.Pos where
   hAdd p₁ p₂ := { byteIdx := hAdd p₁.byteIdx p₂.byteIdx }
@@ -2354,7 +2486,7 @@ instance : HSub String.Pos String.Pos String.Pos where
   hSub p₁ p₂ := { byteIdx := HSub.hSub p₁.byteIdx p₂.byteIdx }
 
 instance : HAdd String.Pos Char String.Pos where
-  hAdd p c := { byteIdx := hAdd p.byteIdx (String.csize c) }
+  hAdd p c := { byteIdx := hAdd p.byteIdx c.utf8Size }
 
 instance : HAdd String.Pos String String.Pos where
   hAdd p s := { byteIdx := hAdd p.byteIdx s.utf8ByteSize }
@@ -2370,6 +2502,9 @@ instance (p₁ p₂ : String.Pos) : Decidable (LE.le p₁ p₂) :=
 
 instance (p₁ p₂ : String.Pos) : Decidable (LT.lt p₁ p₂) :=
   inferInstanceAs (Decidable (LT.lt p₁.byteIdx p₂.byteIdx))
+
+instance : Min String.Pos := minOfLe
+instance : Max String.Pos := maxOfLe
 
 /-- A `String.Pos` pointing at the end of this string. -/
 @[inline] def String.endPos (s : String) : String.Pos where
@@ -2425,7 +2560,7 @@ When we reimplement the specializer, we may consider copying `inst` if it also
 occurs outside binders or if it is an instance.
 -/
 @[never_extract, extern "lean_panic_fn"]
-def panicCore {α : Type u} [Inhabited α] (msg : String) : α := default
+def panicCore {α : Sort u} [Inhabited α] (msg : String) : α := default
 
 /--
 `(panic "msg" : α)` has a built-in implementation which prints `msg` to
@@ -2439,74 +2574,57 @@ Because this is a pure function with side effects, it is marked as
 elimination and other optimizations that assume that the expression is pure.
 -/
 @[noinline, never_extract]
-def panic {α : Type u} [Inhabited α] (msg : String) : α :=
+def panic {α : Sort u} [Inhabited α] (msg : String) : α :=
   panicCore msg
 
 -- TODO: this be applied directly to `Inhabited`'s definition when we remove the above workaround
 attribute [nospecialize] Inhabited
 
 /--
-The class `GetElem cont idx elem dom` implements the `xs[i]` notation.
-When you write this, given `xs : cont` and `i : idx`, lean looks for an instance
-of `GetElem cont idx elem dom`. Here `elem` is the type of `xs[i]`, while
-`dom` is whatever proof side conditions are required to make this applicable.
-For example, the instance for arrays looks like
-`GetElem (Array α) Nat α (fun xs i => i < xs.size)`.
-
-The proof side-condition `dom xs i` is automatically dispatched by the
-`get_elem_tactic` tactic, which can be extended by adding more clauses to
-`get_elem_tactic_trivial`.
--/
-class GetElem (cont : Type u) (idx : Type v) (elem : outParam (Type w)) (dom : outParam (cont → idx → Prop)) where
-  /--
-  The syntax `arr[i]` gets the `i`'th element of the collection `arr`.
-  If there are proof side conditions to the application, they will be automatically
-  inferred by the `get_elem_tactic` tactic.
-
-  The actual behavior of this class is type-dependent,
-  but here are some important implementations:
-  * `arr[i] : α` where `arr : Array α` and `i : Nat` or `i : USize`:
-    does array indexing with no bounds check and a proof side goal `i < arr.size`.
-  * `l[i] : α` where `l : List α` and `i : Nat`: index into a list,
-    with proof side goal `i < l.length`.
-  * `stx[i] : Syntax` where `stx : Syntax` and `i : Nat`: get a syntax argument,
-    no side goal (returns `.missing` out of range)
-
-  There are other variations on this syntax:
-  * `arr[i]`: proves the proof side goal by `get_elem_tactic`
-  * `arr[i]!`: panics if the side goal is false
-  * `arr[i]?`: returns `none` if the side goal is false
-  * `arr[i]'h`: uses `h` to prove the side goal
-  -/
-  getElem (xs : cont) (i : idx) (h : dom xs i) : elem
-
-export GetElem (getElem)
-
-/--
 `Array α` is the type of [dynamic arrays](https://en.wikipedia.org/wiki/Dynamic_array)
 with elements from `α`. This type has special support in the runtime.
 
 An array has a size and a capacity; the size is `Array.size` but the capacity
-is not observable from lean code. Arrays perform best when unshared; as long
+is not observable from Lean code. Arrays perform best when unshared; as long
 as they are used "linearly" all updates will be performed destructively on the
 array, so it has comparable performance to mutable arrays in imperative
 programming languages.
+
+From the point of view of proofs `Array α` is just a wrapper around `List α`.
 -/
 structure Array (α : Type u) where
-  /-- Convert a `List α` into an `Array α`. This function is overridden
-  to `List.toArray` and is O(n) in the length of the list. -/
-  mk ::
-  /-- Convert an `Array α` into a `List α`. This function is overridden
-  to `Array.toList` and is O(n) in the length of the list. -/
-  data : List α
+  /--
+  Converts a `List α` into an `Array α`.
 
-attribute [extern "lean_array_data"] Array.data
+  You can also use the synonym `List.toArray` when dot notation is convenient.
+
+  At runtime, this constructor is implemented by `List.toArrayImpl` and is O(n) in the length of the
+  list.
+  -/
+  mk ::
+  /--
+  Converts a `Array α` into an `List α`.
+
+  At runtime, this projection is implemented by `Array.toListImpl` and is O(n) in the length of the
+  array. -/
+  toList : List α
+
+attribute [extern "lean_array_to_list"] Array.toList
 attribute [extern "lean_array_mk"] Array.mk
+
+/--
+Converts a `List α` into an `Array α`. (This is preferred over the synonym `Array.mk`.)
+
+At runtime, this constructor is implemented by `List.toArrayImpl` and is O(n) in the length of the
+list.
+-/
+@[match_pattern]
+abbrev List.toArray (xs : List α) : Array α := .mk xs
 
 /-- Construct a new empty array with initial capacity `c`. -/
 @[extern "lean_mk_empty_array_with_capacity"]
 def Array.mkEmpty {α : Type u} (c : @& Nat) : Array α where
-  data := List.nil
+  toList := List.nil
 
 /-- Construct a new empty array. -/
 def Array.empty {α : Type u} : Array α := mkEmpty 0
@@ -2514,24 +2632,28 @@ def Array.empty {α : Type u} : Array α := mkEmpty 0
 /-- Get the size of an array. This is a cached value, so it is O(1) to access. -/
 @[reducible, extern "lean_array_get_size"]
 def Array.size {α : Type u} (a : @& Array α) : Nat :=
- a.data.length
+ a.toList.length
 
-/-- Access an element from an array without bounds checks, using a `Fin` index. -/
+/--
+Access an element from an array without needing a runtime bounds checks,
+using a `Nat` index and a proof that it is in bounds.
+
+This function does not use `get_elem_tactic` to automatically find the proof that
+the index is in bounds. This is because the tactic itself needs to look up values in
+arrays. Use the indexing notation `a[i]` instead.
+-/
 @[extern "lean_array_fget"]
-def Array.get {α : Type u} (a : @& Array α) (i : @& Fin a.size) : α :=
-  a.data.get i
+def Array.get {α : Type u} (a : @& Array α) (i : @& Nat) (h : LT.lt i a.size) : α :=
+  a.toList.get ⟨i, h⟩
 
 /-- Access an element from an array, or return `v₀` if the index is out of bounds. -/
 @[inline] abbrev Array.getD (a : Array α) (i : Nat) (v₀ : α) : α :=
-  dite (LT.lt i a.size) (fun h => a.get ⟨i, h⟩) (fun _ => v₀)
+  dite (LT.lt i a.size) (fun h => a.get i h) (fun _ => v₀)
 
 /-- Access an element from an array, or panic if the index is out of bounds. -/
 @[extern "lean_array_get"]
 def Array.get! {α : Type u} [Inhabited α] (a : @& Array α) (i : @& Nat) : α :=
   Array.getD a i default
-
-instance : GetElem (Array α) Nat α fun xs i => LT.lt i xs.size where
-  getElem xs i h := xs.get ⟨i, h⟩
 
 /--
 Push an element onto the end of an array. This is amortized O(1) because
@@ -2539,7 +2661,7 @@ Push an element onto the end of an array. This is amortized O(1) because
 -/
 @[extern "lean_array_push"]
 def Array.push {α : Type u} (a : Array α) (v : α) : Array α where
-  data := List.concat a.data v
+  toList := List.concat a.toList v
 
 /-- Create array `#[]` -/
 def Array.mkArray0 {α : Type u} : Array α :=
@@ -2577,35 +2699,6 @@ def Array.mkArray7 {α : Type u} (a₁ a₂ a₃ a₄ a₅ a₆ a₇ : α) : Arr
 def Array.mkArray8 {α : Type u} (a₁ a₂ a₃ a₄ a₅ a₆ a₇ a₈ : α) : Array α :=
   ((((((((mkEmpty 8).push a₁).push a₂).push a₃).push a₄).push a₅).push a₆).push a₇).push a₈
 
-/--
-Set an element in an array without bounds checks, using a `Fin` index.
-
-This will perform the update destructively provided that `a` has a reference
-count of 1 when called.
--/
-@[extern "lean_array_fset"]
-def Array.set (a : Array α) (i : @& Fin a.size) (v : α) : Array α where
-  data := a.data.set i.val v
-
-/--
-Set an element in an array, or do nothing if the index is out of bounds.
-
-This will perform the update destructively provided that `a` has a reference
-count of 1 when called.
--/
-@[inline] def Array.setD (a : Array α) (i : Nat) (v : α) : Array α :=
-  dite (LT.lt i a.size) (fun h => a.set ⟨i, h⟩ v) (fun _ => a)
-
-/--
-Set an element in an array, or panic if the index is out of bounds.
-
-This will perform the update destructively provided that `a` has a reference
-count of 1 when called.
--/
-@[extern "lean_array_set"]
-def Array.set! (a : Array α) (i : @& Nat) (v : α) : Array α :=
-  Array.setD a i v
-
 /-- Slower `Array.append` used in quotations. -/
 protected def Array.appendCore {α : Type u}  (as : Array α) (bs : Array α) : Array α :=
   let rec loop (i : Nat) (j : Nat) (as : Array α) : Array α :=
@@ -2613,7 +2706,7 @@ protected def Array.appendCore {α : Type u}  (as : Array α) (bs : Array α) : 
       (fun hlt =>
         match i with
         | 0           => as
-        | Nat.succ i' => loop i' (hAdd j 1) (as.push (bs.get ⟨j, hlt⟩)))
+        | Nat.succ i' => loop i' (hAdd j 1) (as.push (bs.get j hlt)))
       (fun _ => as)
   loop bs.size 0 as
 
@@ -2622,38 +2715,16 @@ protected def Array.appendCore {α : Type u}  (as : Array α) (bs : Array α) : 
   If `start` is greater or equal to `stop`, the result is empty.
   If `stop` is greater than the length of `as`, the length is used instead. -/
 -- NOTE: used in the quotation elaborator output
-def Array.extract (as : Array α) (start stop : Nat) : Array α :=
+def Array.extract (as : Array α) (start : Nat := 0) (stop : Nat := as.size) : Array α :=
   let rec loop (i : Nat) (j : Nat) (bs : Array α) : Array α :=
     dite (LT.lt j as.size)
       (fun hlt =>
         match i with
         | 0           => bs
-        | Nat.succ i' => loop i' (hAdd j 1) (bs.push (as.get ⟨j, hlt⟩)))
+        | Nat.succ i' => loop i' (hAdd j 1) (bs.push (as.get j hlt)))
       (fun _ => bs)
   let sz' := Nat.sub (min stop as.size) start
   loop sz' start (mkEmpty sz')
-
-/-- Auxiliary definition for `List.toArray`. -/
-@[inline_if_reduce]
-def List.toArrayAux : List α → Array α → Array α
-  | nil,       r => r
-  | cons a as, r => toArrayAux as (r.push a)
-
-/-- A non-tail-recursive version of `List.length`, used for `List.toArray`. -/
-@[inline_if_reduce]
-def List.redLength : List α → Nat
-  | nil       => 0
-  | cons _ as => as.redLength.succ
-
-/--
-Convert a `List α` into an `Array α`. This is O(n) in the length of the list.
-
-This function is exported to C, where it is called by `Array.mk`
-(the constructor) to implement this functionality.
--/
-@[inline, match_pattern, export lean_list_to_array]
-def List.toArray (as : List α) : Array α :=
-  as.toArrayAux (Array.mkEmpty as.redLength)
 
 /-- The typeclass which supplies the `>>=` "bind" function. See `Monad`. -/
 class Bind (m : Type u → Type v) where
@@ -2744,7 +2815,7 @@ Like many functional programming languages, Lean makes extensive use of monads
 for structuring programs. In particular, the `do` notation is a very powerful
 syntax over monad operations, and it depends on a `Monad` instance.
 
-See [the `do` notation](https://leanprover.github.io/lean4/doc/do.html)
+See [the `do` notation](https://lean-lang.org/lean4/doc/do.html)
 chapter of the manual for details.
 -/
 class Monad (m : Type u → Type v) extends Applicative m, Bind m : Type (max (u+1) v) where
@@ -2761,17 +2832,6 @@ instance {α : Type u} {m : Type u → Type v} [Monad m] [Inhabited α] : Inhabi
 
 instance [Monad m] : [Nonempty α] → Nonempty (m α)
   | ⟨x⟩ => ⟨pure x⟩
-
-/-- A fusion of Haskell's `sequence` and `map`. Used in syntax quotations. -/
-def Array.sequenceMap {α : Type u} {β : Type v} {m : Type v → Type w} [Monad m] (as : Array α) (f : α → m β) : m (Array β) :=
-  let rec loop (i : Nat) (j : Nat) (bs : Array β) : m (Array β) :=
-    dite (LT.lt j as.size)
-      (fun hlt =>
-        match i with
-        | 0           => pure bs
-        | Nat.succ i' => Bind.bind (f (as.get ⟨j, hlt⟩)) fun b => loop i' (hAdd j 1) (bs.push b))
-      (fun _ => pure bs)
-  loop as.size 0 (Array.mkEmpty as.size)
 
 /--
 A function for lifting a computation from an inner `Monad` to an outer `Monad`.
@@ -2807,6 +2867,32 @@ instance (m n o) [MonadLift n o] [MonadLiftT m n] : MonadLiftT m o where
 
 instance (m) : MonadLiftT m m where
   monadLift x := x
+
+/--
+Typeclass used for adapting monads. This is similar to `MonadLift`, but instances are allowed to
+make use of default state for the purpose of synthesizing such an instance, if necessary.
+Every `MonadLift` instance gives a `MonadEval` instance.
+
+The purpose of this class is for the `#eval` command,
+which looks for a `MonadEval m CommandElabM` or `MonadEval m IO` instance.
+-/
+class MonadEval (m : semiOutParam (Type u → Type v)) (n : Type u → Type w) where
+  /-- Evaluates a value from monad `m` into monad `n`. -/
+  monadEval : {α : Type u} → m α → n α
+
+instance [MonadLift m n] : MonadEval m n where
+  monadEval := MonadLift.monadLift
+
+/-- The transitive closure of `MonadEval`. -/
+class MonadEvalT (m : Type u → Type v) (n : Type u → Type w) where
+  /-- Evaluates a value from monad `m` into monad `n`. -/
+  monadEval : {α : Type u} → m α → n α
+
+instance (m n o) [MonadEval n o] [MonadEvalT m n] : MonadEvalT m o where
+  monadEval x := MonadEval.monadEval (m := n) (MonadEvalT.monadEval x)
+
+instance (m) : MonadEvalT m m where
+  monadEval x := x
 
 /--
 A functor in the category of monads. Can be used to lift monad-transforming functions.
@@ -2909,7 +2995,7 @@ def MonadExcept.ofExcept [Monad m] [MonadExcept ε m] : Except ε α → m α
 
 export MonadExcept (throw tryCatch ofExcept)
 
-instance (ε : outParam (Type u)) (m : Type v → Type w) [MonadExceptOf ε m] : MonadExcept ε m where
+instance (ε : Type u) (m : Type v → Type w) [MonadExceptOf ε m] : MonadExcept ε m where
   throw    := throwThe ε
   tryCatch := tryCatchThe ε
 
@@ -3083,7 +3169,7 @@ instance (ρ : Type u) (m : Type u → Type v) [MonadWithReaderOf ρ m] : MonadW
 instance {ρ : Type u} {m : Type u → Type v} {n : Type u → Type v} [MonadFunctor m n] [MonadWithReaderOf ρ m] : MonadWithReaderOf ρ n where
   withReader f := monadMap (m := m) (withTheReader ρ f)
 
-instance {ρ : Type u} {m : Type u → Type v} [Monad m] : MonadWithReaderOf ρ (ReaderT ρ m) where
+instance {ρ : Type u} {m : Type u → Type v} : MonadWithReaderOf ρ (ReaderT ρ m) where
   withReader f x := fun ctx => x (f ctx)
 
 /--
@@ -3108,8 +3194,8 @@ class MonadStateOf (σ : semiOutParam (Type u)) (m : Type u → Type v) where
 export MonadStateOf (set)
 
 /--
-Like `withReader`, but with `ρ` explicit. This is useful if a monad supports
-`MonadWithReaderOf` for multiple different types `ρ`.
+Like `get`, but with `σ` explicit. This is useful if a monad supports
+`MonadStateOf` for multiple different types `σ`.
 -/
 abbrev getThe (σ : Type u) {m : Type u → Type v} [MonadStateOf σ m] : m σ :=
   MonadStateOf.get
@@ -3154,7 +3240,7 @@ instance (σ : Type u) (m : Type u → Type v) [MonadStateOf σ m] : MonadState 
 /--
 `modify (f : σ → σ)` applies the function `f` to the state.
 
-It is equivalent to `do put (f (← get))`, but `modify f` may be preferable
+It is equivalent to `do set (f (← get))`, but `modify f` may be preferable
 because the former does not use the state linearly (without sufficient inlining).
 -/
 @[always_inline, inline]
@@ -3166,7 +3252,7 @@ def modify {σ : Type u} {m : Type u → Type v} [MonadState σ m] (f : σ → �
 of the state. It is equivalent to `get <* modify f` but may be more efficient.
 -/
 @[always_inline, inline]
-def getModify {σ : Type u} {m : Type u → Type v} [MonadState σ m] [Monad m] (f : σ → σ) : m σ :=
+def getModify {σ : Type u} {m : Type u → Type v} [MonadState σ m] (f : σ → σ) : m σ :=
   modifyGet fun s => (s, f s)
 
 -- NOTE: The Ordering of the following two instances determines that the top-most `StateT` Monad layer
@@ -3293,7 +3379,7 @@ protected def seqRight (x : EStateM ε σ α) (y : Unit → EStateM ε σ β) : 
   | Result.error e s => Result.error e s
 
 @[always_inline]
-instance : Monad (EStateM ε σ) where
+instance instMonad : Monad (EStateM ε σ) where
   bind     := EStateM.bind
   pure     := EStateM.pure
   map      := EStateM.map
@@ -3350,27 +3436,6 @@ class Hashable (α : Sort u) where
 
 export Hashable (hash)
 
-/-- Converts a `UInt64` to a `USize` by reducing modulo `USize.size`. -/
-@[extern "lean_uint64_to_usize"]
-opaque UInt64.toUSize (u : UInt64) : USize
-
-/--
-Upcast a `USize` to a `UInt64`.
-This is lossless because `USize.size` is either `2^32` or `2^64`.
-This function is overridden with a native implementation.
--/
-@[extern "lean_usize_to_uint64"]
-def USize.toUInt64 (u : USize) : UInt64 where
-  val := {
-    val  := u.val.val
-    isLt :=
-      let ⟨n, h⟩ := u
-      show LT.lt n _ from
-      match USize.size, usize_size_eq, h with
-      | _, Or.inl rfl, h => Nat.lt_trans h (by decide)
-      | _, Or.inr rfl, h => h
-  }
-
 /-- An opaque hash mixing operation, used to implement hashing for tuples. -/
 @[extern "lean_uint64_mix_hash"]
 opaque mixHash (u₁ u₂ : UInt64) : UInt64
@@ -3388,20 +3453,31 @@ instance : Hashable String where
 namespace Lean
 
 /--
-Hierarchical names. We use hierarchical names to name declarations and
-for creating unique identifiers for free variables and metavariables.
+Hierarchical names consist of a sequence of components, each of
+which is either a string or numeric, that are written separated by dots (`.`).
 
-You can create hierarchical names using the following quotation notation.
+Hierarchical names are used to name declarations and for creating
+unique identifiers for free variables and metavariables.
+
+You can create hierarchical names using a backtick:
 ```
 `Lean.Meta.whnf
 ```
-It is short for `.str (.str (.str .anonymous "Lean") "Meta") "whnf"`
-You can use double quotes to request Lean to statically check whether the name
+It is short for `.str (.str (.str .anonymous "Lean") "Meta") "whnf"`.
+
+You can use double backticks to request Lean to statically check whether the name
 corresponds to a Lean declaration in scope.
 ```
 ``Lean.Meta.whnf
 ```
 If the name is not in scope, Lean will report an error.
+
+There are two ways to convert a `String` to a `Name`:
+
+ 1. `Name.mkSimple` creates a name with a single string component.
+
+ 2. `String.toName` first splits the string into its dot-separated
+    components, and then creates a hierarchical name.
 -/
 inductive Name where
   /-- The "anonymous" name. -/
@@ -3425,9 +3501,9 @@ with
   /-- A hash function for names, which is stored inside the name itself as a
   computed field. -/
   @[computed_field] hash : Name → UInt64
-    | .anonymous => .ofNatCore 1723 (by decide)
+    | .anonymous => .ofNatCore 1723 (of_decide_eq_true rfl)
     | .str p s => mixHash p.hash s.hash
-    | .num p v => mixHash p.hash (dite (LT.lt v UInt64.size) (fun h => UInt64.ofNatCore v h) (fun _ => UInt64.ofNatCore 17 (by decide)))
+    | .num p v => mixHash p.hash (dite (LT.lt v UInt64.size) (fun h => UInt64.ofNatCore v h) (fun _ => UInt64.ofNatCore 17 (of_decide_eq_true rfl)))
 
 instance : Inhabited Name where
   default := Name.anonymous
@@ -3452,7 +3528,9 @@ abbrev mkNum (p : Name) (v : Nat) : Name :=
   Name.num p v
 
 /--
-Short for `.str .anonymous s`.
+Converts a `String` to a `Name` without performing any parsing. `mkSimple s` is short for `.str .anonymous s`.
+
+This means that `mkSimple "a.b"` is the name `«a.b»`, not `a.b`.
 -/
 abbrev mkSimple (s : String) : Name :=
   .str .anonymous s
@@ -3511,6 +3589,13 @@ def appendCore : Name → Name → Name
 
 end Name
 
+/-- The default maximum recursion depth. This is adjustable using the `maxRecDepth` option. -/
+def defaultMaxRecDepth := 512
+
+/-- The message to display on stack overflow. -/
+def maxRecDepthErrorMessage : String :=
+  "maximum recursion depth has been reached\nuse `set_option maxRecDepth <num>` to increase limit\nuse `set_option diagnostics true` to get diagnostic information"
+
 /-! # Syntax -/
 
 /-- Source information of tokens. -/
@@ -3554,7 +3639,8 @@ namespace SourceInfo
 
 /--
 Gets the position information from a `SourceInfo`, if available.
-If `originalOnly` is true, then `.synthetic` syntax will also return `none`.
+If `canonicalOnly` is true, then `.synthetic` syntax with `canonical := false`
+will also return `none`.
 -/
 def getPos? (info : SourceInfo) (canonicalOnly := false) : Option String.Pos :=
   match info, canonicalOnly with
@@ -3562,6 +3648,36 @@ def getPos? (info : SourceInfo) (canonicalOnly := false) : Option String.Pos :=
   | synthetic (pos := pos) (canonical := true) .., _
   | synthetic (pos := pos) .., false => some pos
   | _,                         _     => none
+
+/--
+Gets the end position information from a `SourceInfo`, if available.
+If `canonicalOnly` is true, then `.synthetic` syntax with `canonical := false`
+will also return `none`.
+-/
+def getTailPos? (info : SourceInfo) (canonicalOnly := false) : Option String.Pos :=
+  match info, canonicalOnly with
+  | original (endPos := endPos) ..,  _
+  | synthetic (endPos := endPos) (canonical := true) .., _
+  | synthetic (endPos := endPos) .., false => some endPos
+  | _,                               _     => none
+
+/--
+Gets the substring representing the trailing whitespace of a `SourceInfo`, if available.
+-/
+def getTrailing? (info : SourceInfo) : Option Substring :=
+  match info with
+  | original (trailing := trailing) .. => some trailing
+  | _                                  => none
+
+/--
+Gets the end position information of the trailing whitespace of a `SourceInfo`, if available.
+If `canonicalOnly` is true, then `.synthetic` syntax with `canonical := false`
+will also return `none`.
+-/
+def getTrailingTailPos? (info : SourceInfo) (canonicalOnly := false) : Option String.Pos :=
+  match info.getTrailing? with
+  | some trailing => some trailing.stopPos
+  | none          => info.getTailPos? canonicalOnly
 
 end SourceInfo
 
@@ -3598,8 +3714,7 @@ inductive Syntax where
   /-- Node in the syntax tree.
 
   The `info` field is used by the delaborator to store the position of the
-  subexpression corresponding to this node. The parser sets the `info` field
-  to `none`.
+  subexpression corresponding to this node.
   The parser sets the `info` field to `none`, with position retrieval continuing recursively.
   Nodes created by quotations use the result from `SourceInfo.fromRef` so that they are marked
   as synthetic even when the leading/trailing token is not.
@@ -3790,9 +3905,6 @@ def getArg (stx : Syntax) (i : Nat) : Syntax :=
   | Syntax.node _ _ args => args.getD i Syntax.missing
   | _                    => Syntax.missing
 
-instance : GetElem Syntax Nat Syntax fun _ _ => True where
-  getElem stx i _ := stx.getArg i
-
 /-- Gets the list of arguments of the syntax node, or `#[]` if it's not a `node`. -/
 def getArgs (stx : Syntax) : Array Syntax :=
   match stx with
@@ -3835,23 +3947,12 @@ def getId : Syntax → Name
   | ident _ _ val _ => val
   | _               => Name.anonymous
 
-/--
-Updates the argument list without changing the node kind.
-Does nothing for non-`node` nodes.
--/
-def setArgs (stx : Syntax) (args : Array Syntax) : Syntax :=
-  match stx with
-  | node info k _ => node info k args
-  | stx           => stx
-
-/--
-Updates the `i`'th argument of the syntax.
-Does nothing for non-`node` nodes, or if `i` is out of bounds of the node list.
--/
-def setArg (stx : Syntax) (i : Nat) (arg : Syntax) : Syntax :=
-  match stx with
-  | node info k args => node info k (args.setD i arg)
-  | stx              => stx
+/-- Retrieve the immediate info from the Syntax node. -/
+def getInfo? : Syntax → Option SourceInfo
+  | atom info ..  => some info
+  | ident info .. => some info
+  | node info ..  => some info
+  | missing       => none
 
 /-- Retrieve the left-most node or leaf's info in the Syntax tree. -/
 partial def getHeadInfo? : Syntax → Option SourceInfo
@@ -3881,7 +3982,6 @@ position information.
 -/
 def getPos? (stx : Syntax) (canonicalOnly := false) : Option String.Pos :=
   stx.getHeadInfo.getPos? canonicalOnly
-
 
 /--
 Get the ending position of the syntax, if possible.
@@ -4081,6 +4181,16 @@ def withRef [Monad m] [MonadRef m] {α} (ref : Syntax) (x : m α) : m α :=
   let ref := replaceRef ref oldRef
   MonadRef.withRef ref x
 
+/--
+If `ref? = some ref`, run `x : m α` with a modified value for the `ref` by calling `withRef`.
+Otherwise, run `x` directly.
+-/
+@[always_inline, inline]
+def withRef? [Monad m] [MonadRef m] {α} (ref? : Option Syntax) (x : m α) : m α :=
+  match ref? with
+  | some ref => withRef ref x
+  | _        => x
+
 /-- A monad that supports syntax quotations. Syntax quotations (in term
     position) are monadic values that when executed retrieve the current "macro
     scope" from the monad and apply it to every identifier they introduce
@@ -4257,8 +4367,13 @@ def addMacroScope (mainModule : Name) (n : Name) (scp : MacroScope) : Name :=
     Name.mkNum (Name.mkStr (Name.appendCore (Name.mkStr n "_@") mainModule) "_hyg") scp
 
 /--
-Append two names that may have macro scopes. The macro scopes in `b` are always erased.
-If `a` has macro scopes, then they are propagated to the result of `append a b`.
+Appends two names `a` and `b`, propagating macro scopes from `a` or `b`, if any, to the result.
+Panics if both `a` and `b` have macro scopes.
+
+This function is used for the `Append Name` instance.
+
+See also `Lean.Name.appendCore`, which appends names without any consideration for macro scopes.
+Also consider `Lean.Name.eraseMacroScopes` to erase macro scopes before appending, if appropriate.
 -/
 def Name.append (a b : Name) : Name :=
   match a.hasMacroScopes, b.hasMacroScopes with
@@ -4283,13 +4398,6 @@ main module and current macro scope.
   bind getMainModule     fun mainModule =>
   bind getCurrMacroScope fun scp =>
   pure (Lean.addMacroScope mainModule n scp)
-
-/-- The default maximum recursion depth. This is adjustable using the `maxRecDepth` option. -/
-def defaultMaxRecDepth := 512
-
-/-- The message to display on stack overflow. -/
-def maxRecDepthErrorMessage : String :=
-  "maximum recursion depth has been reached (use `set_option maxRecDepth <num>` to increase limit)"
 
 namespace Syntax
 
@@ -4487,6 +4595,12 @@ def resolveNamespace (n : Name) : MacroM (List Name) := do
 Resolves the given name to an overload list of global definitions.
 The `List String` in each alternative is the deduced list of projections
 (which are ambiguous with name components).
+
+Remark: it will not trigger actions associated with reserved names. Recall that Lean
+has reserved names. For example, a definition `foo` has a reserved name `foo.def` for theorem
+containing stating that `foo` is equal to its definition. The action associated with `foo.def`
+automatically proves the theorem. At the macro level, the name is resolved, but the action is not
+executed. The actions are executed by the elaborator when converting `Syntax` into `Expr`.
 -/
 def resolveGlobalName (n : Name) : MacroM (List (Prod Name (List String))) := do
   (← getMethods).resolveGlobalName n

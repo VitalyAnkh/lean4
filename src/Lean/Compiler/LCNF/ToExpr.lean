@@ -3,6 +3,7 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Compiler.LCNF.Basic
 
 namespace Lean.Compiler.LCNF
@@ -108,8 +109,5 @@ def Code.toExpr (code : Code) (xs : Array FVarId := #[]) : Expr :=
 
 def FunDeclCore.toExpr (decl : FunDecl) (xs : Array FVarId := #[]) : Expr :=
   run' decl.toExprM xs
-
-def Decl.toExpr (decl : Decl) : Expr :=
-  run do withParams decl.params do mkLambdaM decl.params (← decl.value.toExprM)
 
 end Lean.Compiler.LCNF

@@ -5,6 +5,8 @@ Author: Leonardo de Moura
 -/
 prelude
 import Init.Control.Basic
+import Init.Control.Id
+import Init.Control.Lawful
 import Init.Data.List.Basic
 
 namespace List
@@ -40,6 +42,13 @@ Finally, we rarely use `mapM` with something that is not a `Monad`.
 Users that want to use `mapM` with `Applicative` should use `mapA` instead.
 -/
 
+/--
+Applies the monadic action `f` on every element in the list, left-to-right, and returns the list of
+results.
+
+See `List.forM` for the variant that discards the results.
+See `List.mapA` for the variant that works with `Applicative`.
+-/
 @[inline]
 def mapM {m : Type u → Type v} [Monad m] {α : Type w} {β : Type u} (f : α → m β) (as : List α) : m (List β) :=
   let rec @[specialize] loop
@@ -47,22 +56,48 @@ def mapM {m : Type u → Type v} [Monad m] {α : Type w} {β : Type u} (f : α �
     | a :: as, bs => do loop as ((← f a)::bs)
   loop as []
 
+/--
+Applies the applicative action `f` on every element in the list, left-to-right, and returns the list of
+results.
+
+NB: If `m` is also a `Monad`, then using `mapM` can be more efficient.
+
+See `List.forA` for the variant that discards the results.
+See `List.mapM` for the variant that works with `Monad`.
+
+**Warning**: this function is not tail-recursive, meaning that it may fail with a stack overflow on long lists.
+-/
 @[specialize]
 def mapA {m : Type u → Type v} [Applicative m] {α : Type w} {β : Type u} (f : α → m β) : List α → m (List β)
   | []    => pure []
   | a::as => List.cons <$> f a <*> mapA f as
 
+/--
+Applies the monadic action `f` on every element in the list, left-to-right.
+
+See `List.mapM` for the variant that collects results.
+See `List.forA` for the variant that works with `Applicative`.
+-/
 @[specialize]
 protected def forM {m : Type u → Type v} [Monad m] {α : Type w} (as : List α) (f : α → m PUnit) : m PUnit :=
   match as with
   | []      => pure ⟨⟩
   | a :: as => do f a; List.forM as f
 
+/--
+Applies the applicative action `f` on every element in the list, left-to-right.
+
+NB: If `m` is also a `Monad`, then using `forM` can be more efficient.
+
+See `List.mapA` for the variant that collects results.
+See `List.forM` for the variant that works with `Monad`.
+-/
 @[specialize]
 def forA {m : Type u → Type v} [Applicative m] {α : Type w} (as : List α) (f : α → m PUnit) : m PUnit :=
   match as with
   | []      => pure ⟨⟩
   | a :: as => f a *> forA as f
+
 
 @[specialize]
 def filterAuxM {m : Type → Type v} [Monad m] {α : Type} (f : α → m Bool) : List α → List α → m (List α)
@@ -71,25 +106,60 @@ def filterAuxM {m : Type → Type v} [Monad m] {α : Type} (f : α → m Bool) :
     let b ← f h
     filterAuxM f t (cond b (h :: acc) acc)
 
+/--
+Applies the monadic predicate `p` on every element in the list, left-to-right, and returns those
+elements `x` for which `p x` returns `true`.
+-/
 @[inline]
-def filterM {m : Type → Type v} [Monad m] {α : Type} (f : α → m Bool) (as : List α) : m (List α) := do
-  let as ← filterAuxM f as []
+def filterM {m : Type → Type v} [Monad m] {α : Type} (p : α → m Bool) (as : List α) : m (List α) := do
+  let as ← filterAuxM p as []
   pure as.reverse
 
+/--
+Applies the monadic predicate `p` on every element in the list, right-to-left, and returns those
+elements `x` for which `p x` returns `true`.
+-/
 @[inline]
-def filterRevM {m : Type → Type v} [Monad m] {α : Type} (f : α → m Bool) (as : List α) : m (List α) :=
-  filterAuxM f as.reverse []
+def filterRevM {m : Type → Type v} [Monad m] {α : Type} (p : α → m Bool) (as : List α) : m (List α) :=
+  filterAuxM p as.reverse []
 
+/--
+Applies the monadic function `f` on every element `x` in the list, left-to-right, and returns those
+results `y` for which `f x` returns `some y`.
+-/
 @[inline]
 def filterMapM {m : Type u → Type v} [Monad m] {α β : Type u} (f : α → m (Option β)) (as : List α) : m (List β) :=
   let rec @[specialize] loop
-    | [],     bs => pure bs
+    | [],     bs => pure bs.reverse
     | a :: as, bs => do
       match (← f a) with
       | none   => loop as bs
       | some b => loop as (b::bs)
-  loop as.reverse []
+  loop as []
 
+/--
+Applies the monadic function `f` on every element `x` in the list, left-to-right, and returns the
+concatenation of the results.
+-/
+@[inline]
+def flatMapM {m : Type u → Type v} [Monad m] {α : Type w} {β : Type u} (f : α → m (List β)) (as : List α) : m (List β) :=
+  let rec @[specialize] loop
+    | [],     bs => pure bs.reverse.flatten
+    | a :: as, bs => do
+      let bs' ← f a
+      loop as (bs' :: bs)
+  loop as []
+
+/--
+Folds a monadic function over a list from left to right:
+```
+foldlM f x₀ [a, b, c] = do
+  let x₁ ← f x₀ a
+  let x₂ ← f x₁ b
+  let x₃ ← f x₂ c
+  pure x₃
+```
+-/
 @[specialize]
 protected def foldlM {m : Type u → Type v} [Monad m] {s : Type u} {α : Type w} : (f : s → α → m s) → (init : s) → List α → m s
   | _, s, []      => pure s
@@ -97,10 +167,33 @@ protected def foldlM {m : Type u → Type v} [Monad m] {s : Type u} {α : Type w
     let s' ← f s a
     List.foldlM f s' as
 
+@[simp] theorem foldlM_nil [Monad m] (f : β → α → m β) (b) : [].foldlM f b = pure b := rfl
+@[simp] theorem foldlM_cons [Monad m] (f : β → α → m β) (b) (a) (l : List α) :
+    (a :: l).foldlM f b = f b a >>= l.foldlM f := by
+  simp [List.foldlM]
+
+/--
+Folds a monadic function over a list from right to left:
+```
+foldrM f x₀ [a, b, c] = do
+  let x₁ ← f c x₀
+  let x₂ ← f b x₁
+  let x₃ ← f a x₂
+  pure x₃
+```
+-/
 @[inline]
 def foldrM {m : Type u → Type v} [Monad m] {s : Type u} {α : Type w} (f : α → s → m s) (init : s) (l : List α) : m s :=
   l.reverse.foldlM (fun s a => f a s) init
 
+@[simp] theorem foldrM_nil [Monad m] (f : α → β → m β) (b) : [].foldrM f b = pure b := rfl
+
+/--
+Maps `f` over the list and collects the results with `<|>`.
+```
+firstM f [a, b, c] = f a <|> f b <|> f c <|> failure
+```
+-/
 @[specialize]
 def firstM {m : Type u → Type v} [Alternative m] {α : Type w} {β : Type u} (f : α → m β) : List α → m β
   | []    => failure
@@ -130,6 +223,16 @@ def findM? {m : Type → Type u} [Monad m] {α : Type} (p : α → m Bool) : Lis
     | true  => pure (some a)
     | false => findM? p as
 
+@[simp]
+theorem findM?_id (p : α → Bool) (as : List α) : findM? (m := Id) p as = as.find? p := by
+  induction as with
+  | nil => rfl
+  | cons a as ih =>
+    simp only [findM?, find?]
+    cases p a with
+    | true  => rfl
+    | false => rw [ih]; rfl
+
 @[specialize]
 def findSomeM? {m : Type u → Type v} [Monad m] {α : Type w} {β : Type u} (f : α → m (Option β)) : List α → m (Option β)
   | []    => pure none
@@ -138,33 +241,37 @@ def findSomeM? {m : Type u → Type v} [Monad m] {α : Type w} {β : Type u} (f 
     | some b => pure (some b)
     | none   => findSomeM? f as
 
-@[inline] protected def forIn {α : Type u} {β : Type v} {m : Type v → Type w} [Monad m] (as : List α) (init : β) (f : α → β → m (ForInStep β)) : m β :=
-  let rec @[specialize] loop
-    | [], b    => pure b
-    | a::as, b => do
-      match (← f a b) with
-      | ForInStep.done b  => pure b
-      | ForInStep.yield b => loop as b
-  loop as init
+@[simp]
+theorem findSomeM?_id (f : α → Option β) (as : List α) : findSomeM? (m := Id) f as = as.findSome? f := by
+  induction as with
+  | nil => rfl
+  | cons a as ih =>
+    simp only [findSomeM?, findSome?]
+    cases f a with
+    | some b => rfl
+    | none   => rw [ih]; rfl
 
-instance : ForIn m (List α) α where
-  forIn := List.forIn
-
-@[simp] theorem forIn_nil [Monad m] (f : α → β → m (ForInStep β)) (b : β) : forIn [] b f = pure b :=
-  rfl
-
-@[simp] theorem forIn_cons [Monad m] (f : α → β → m (ForInStep β)) (a : α) (as : List α) (b : β)
-    : forIn (a::as) b f = f a b >>= fun | ForInStep.done b => pure b | ForInStep.yield b => forIn as b f :=
-  rfl
+theorem findM?_eq_findSomeM? [Monad m] [LawfulMonad m] (p : α → m Bool) (as : List α) :
+    as.findM? p = as.findSomeM? fun a => return if (← p a) then some a else none := by
+  induction as with
+  | nil => rfl
+  | cons a as ih =>
+    simp only [findM?, findSomeM?]
+    simp [ih]
+    congr
+    apply funext
+    intro b
+    cases b <;> simp
 
 @[inline] protected def forIn' {α : Type u} {β : Type v} {m : Type v → Type w} [Monad m] (as : List α) (init : β) (f : (a : α) → a ∈ as → β → m (ForInStep β)) : m β :=
   let rec @[specialize] loop : (as' : List α) → (b : β) → Exists (fun bs => bs ++ as' = as) → m β
     | [], b, _    => pure b
     | a::as', b, h => do
       have : a ∈ as := by
+        clear f
         have ⟨bs, h⟩ := h
         subst h
-        exact mem_append_of_mem_right _ (Mem.head ..)
+        exact mem_append_right _ (Mem.head ..)
       match (← f a this b) with
       | ForInStep.done b  => pure b
       | ForInStep.yield b =>
@@ -175,17 +282,22 @@ instance : ForIn m (List α) α where
 instance : ForIn' m (List α) α inferInstance where
   forIn' := List.forIn'
 
-@[simp] theorem forIn'_eq_forIn {α : Type u} {β : Type v} {m : Type v → Type w} [Monad m] (as : List α) (init : β) (f : α → β → m (ForInStep β)) : forIn' as init (fun a _ b => f a b) = forIn as init f := by
-  simp [forIn', forIn, List.forIn, List.forIn']
-  have : ∀ cs h, List.forIn'.loop cs (fun a _ b => f a b) as init h = List.forIn.loop f as init := by
-    intro cs h
-    induction as generalizing cs init with
-    | nil => intros; rfl
-    | cons a as ih => intros; simp [List.forIn.loop, List.forIn'.loop, ih]
-  apply this
+-- No separate `ForIn` instance is required because it can be derived from `ForIn'`.
+
+-- We simplify `List.forIn'` to `forIn'`.
+@[simp] theorem forIn'_eq_forIn' [Monad m] : @List.forIn' α β m _ = forIn' := rfl
+
+@[simp] theorem forIn'_nil [Monad m] (f : (a : α) → a ∈ [] → β → m (ForInStep β)) (b : β) : forIn' [] b f = pure b :=
+  rfl
+
+@[simp] theorem forIn_nil [Monad m] (f : α → β → m (ForInStep β)) (b : β) : forIn [] b f = pure b :=
+  rfl
 
 instance : ForM m (List α) α where
   forM := List.forM
+
+-- We simplify `List.forM` to `forM`.
+@[simp] theorem forM_eq_forM [Monad m] : @List.forM m _ α = forM := rfl
 
 @[simp] theorem forM_nil  [Monad m] (f : α → m PUnit) : forM [] f = pure ⟨⟩ :=
   rfl

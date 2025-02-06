@@ -3,6 +3,7 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Meta.Check
 import Lean.Meta.Tactic.Util
 import Lean.Meta.Tactic.Apply
@@ -27,15 +28,11 @@ def _root_.Lean.MVarId.constructor (mvarId : MVarId) (cfg : ApplyConfig := {}) :
             pure ()
         throwTacticEx `constructor mvarId "no applicable constructor found"
 
-@[deprecated MVarId.constructor]
-def constructor (mvarId : MVarId) (cfg : ApplyConfig := {}) : MetaM (List MVarId) := do
-  mvarId.constructor cfg
-
 def _root_.Lean.MVarId.existsIntro (mvarId : MVarId) (w : Expr) : MetaM MVarId := do
   mvarId.withContext do
     mvarId.checkNotAssigned `exists
     let target ← mvarId.getType'
-    matchConstStruct target.getAppFn
+    matchConstStructure target.getAppFn
       (fun _ => throwTacticEx `exists mvarId "target is not an inductive datatype with one constructor")
       fun _ us cval => do
         if cval.numFields < 2 then
@@ -48,9 +45,5 @@ def _root_.Lean.MVarId.existsIntro (mvarId : MVarId) (w : Expr) : MetaM MVarId :
         let [mvarId] ← mvarId.apply <| mkApp f w
           | throwTacticEx `exists mvarId "unexpected number of subgoals"
         pure mvarId
-
-@[deprecated MVarId.existsIntro]
-def existsIntro (mvarId : MVarId) (w : Expr) : MetaM MVarId := do
-  mvarId.existsIntro w
 
 end Lean.Meta

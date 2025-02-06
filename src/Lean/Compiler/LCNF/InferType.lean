@@ -3,6 +3,7 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Compiler.LCNF.CompilerM
 import Lean.Compiler.LCNF.Types
 import Lean.Compiler.LCNF.PhaseExt
@@ -75,8 +76,8 @@ def getType (fvarId : FVarId) : InferTypeM Expr := do
 
 def mkForallFVars (xs : Array Expr) (type : Expr) : InferTypeM Expr :=
   let b := type.abstract xs
-  xs.size.foldRevM (init := b) fun i b => do
-    let x := xs[i]!
+  xs.size.foldRevM (init := b) fun i _ b => do
+    let x := xs[i]
     let n ← InferType.getBinderName x.fvarId!
     let ty ← InferType.getType x.fvarId!
     let ty := ty.abstractRange i xs;
@@ -167,13 +168,12 @@ mutual
       /- TODO: after we erase universe variables, we can just extract a better type using just `structName` and `idx`. -/
       return erasedExpr
     else
-      matchConstStruct structType.getAppFn failed fun structVal structLvls ctorVal =>
-        let n := structVal.numParams
-        let structParams := structType.getAppArgs
-        if n != structParams.size then
+      matchConstStructure structType.getAppFn failed fun structVal structLvls ctorVal =>
+        let structTypeArgs := structType.getAppArgs
+        if structVal.numParams + structVal.numIndices != structTypeArgs.size then
           failed ()
         else do
-          let mut ctorType ← inferAppType (mkAppN (mkConst ctorVal.name structLvls) structParams)
+          let mut ctorType ← inferAppType (mkAppN (mkConst ctorVal.name structLvls) structTypeArgs[:structVal.numParams])
           for _ in [:idx] do
             match ctorType with
             | .forallE _ _ body _ =>

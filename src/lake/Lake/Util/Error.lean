@@ -3,6 +3,9 @@ Copyright (c) 2021 Mac Malone. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Mac Malone
 -/
+prelude
+import Init.System.IO
+
 namespace Lake
 
 class MonadError (m : Type u → Type v) where
@@ -26,7 +29,7 @@ instance : MonadError (Except String) where
 Perform an EIO action.
 If it throws an error, invoke `error` with its string representation.
 -/
-protected def MonadError.runEIO [Monad m]
+@[inline] protected def MonadError.runEIO [Monad m]
 [MonadError m] [MonadLiftT BaseIO m] [ToString ε] (x : EIO ε α) : m α := do
   match (← x.toBaseIO) with
   | Except.ok a => pure a

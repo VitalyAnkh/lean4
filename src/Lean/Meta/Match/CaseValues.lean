@@ -3,6 +3,7 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Meta.Tactic.Subst
 import Lean.Meta.Tactic.Clear
 import Lean.Meta.Match.Value
@@ -29,7 +30,7 @@ private def caseValueAux (mvarId : MVarId) (fvarId : FVarId) (value : Expr) (hNa
     let tag ← mvarId.getTag
     mvarId.checkNotAssigned `caseValue
     let target ← mvarId.getType
-    let xEqValue ← mkEq (mkFVar fvarId) (foldPatValue value)
+    let xEqValue ← mkEq (mkFVar fvarId) (← normLitValue value)
     let xNeqValue := mkApp (mkConst `Not) xEqValue
     let thenTarget := Lean.mkForall hName BinderInfo.default xEqValue  target
     let elseTarget := Lean.mkForall hName BinderInfo.default xNeqValue target
@@ -75,7 +76,7 @@ structure CaseValuesSubgoal where
   The type of `x` must have decidable equality.
 
   Remark: the last subgoal is for the "else" catchall case, and its `subst` is `{}`.
-  Remark: the fiels `newHs` has size 1 forall but the last subgoal.
+  Remark: the field `newHs` has size 1 forall but the last subgoal.
 
   If `substNewEqs = true`, then the new `h_i` equality hypotheses are substituted in the first `n` cases.
 -/

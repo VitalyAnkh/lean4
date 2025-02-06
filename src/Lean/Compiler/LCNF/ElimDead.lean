@@ -3,6 +3,7 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Compiler.LCNF.CompilerM
 
 namespace Lean.Compiler.LCNF
@@ -94,6 +95,6 @@ def Code.elimDead (code : Code) : CompilerM Code :=
   ElimDead.elimDead code |>.run' {}
 
 def Decl.elimDead (decl : Decl) : CompilerM Decl := do
-  return { decl with value := (← decl.value.elimDead) }
+  return { decl with value := (← decl.value.mapCodeM Code.elimDead) }
 
 end Lean.Compiler.LCNF

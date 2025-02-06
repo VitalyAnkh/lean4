@@ -3,6 +3,7 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Compiler.LCNF.PassManager
 
 namespace Lean.Compiler.LCNF
@@ -31,6 +32,7 @@ def mkDeclExt (name : Name := by exact decl_name%) : IO DeclExt := do
     exportEntriesFn := fun s =>
       let decls := s.foldl (init := #[]) fun decls _ decl => decls.push decl
       sortDecls decls
+    asyncMode       := .sync  -- compilation is non-parallel anyway
   }
 
 builtin_initialize baseExt : PersistentEnvExtension Decl Decl DeclExtState ← mkDeclExt

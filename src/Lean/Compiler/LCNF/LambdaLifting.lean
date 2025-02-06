@@ -3,6 +3,7 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Meta.Instances
 import Lean.Compiler.InlineAttrs
 import Lean.Compiler.LCNF.Closure
@@ -87,7 +88,7 @@ occurring in `decl`.
 -/
 def mkAuxDecl (closure : Array Param) (decl : FunDecl) : LiftM LetDecl := do
   let nameNew ← mkAuxDeclName
-  let inlineAttr? := if (← read).inheritInlineAttrs then (← read).mainDecl.inlineAttr? else none
+  let inlineAttr? ← if (← read).inheritInlineAttrs then pure (← read).mainDecl.inlineAttr? else pure none
   let auxDecl ← go nameNew (← read).mainDecl.safe inlineAttr? |>.run' {}
   let us := auxDecl.levelParams.map mkLevelParam
   let auxDeclName ← match (← cacheAuxDecl auxDecl) with
@@ -107,9 +108,10 @@ def mkAuxDecl (closure : Array Param) (decl : FunDecl) : LiftM LetDecl := do
 where
   go (nameNew : Name) (safe : Bool) (inlineAttr? : Option InlineAttributeKind) : InternalizeM Decl := do
     let params := (← closure.mapM internalizeParam) ++ (← decl.params.mapM internalizeParam)
-    let value ← internalizeCode decl.value
-    let type ← value.inferType
+    let code ← internalizeCode decl.value
+    let type ← code.inferType
     let type ← mkForallParams params type
+    let value := .code code
     let decl := { name := nameNew, levelParams := [], params, type, value, safe, inlineAttr?, recursive := false : Decl }
     return decl.setLevelParams
 
@@ -148,7 +150,7 @@ mutual
 end
 
 def main (decl : Decl) : LiftM Decl := do
-  let value ← withParams decl.params <| visitCode decl.value
+  let value ← withParams decl.params <| decl.value.mapCodeM visitCode
   return { decl with value }
 
 end LambdaLifting

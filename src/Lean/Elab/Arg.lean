@@ -3,23 +3,28 @@ Copyright (c) 2021 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Elab.Term
 
 namespace Lean.Elab.Term
 
 /--
-  Auxiliary inductive datatype for combining unelaborated syntax
-  and already elaborated expressions. It is used to elaborate applications. -/
+Auxiliary inductive datatype for combining unelaborated syntax
+and already elaborated expressions. It is used to elaborate applications.
+-/
 inductive Arg where
   | stx  (val : Syntax)
   | expr (val : Expr)
   deriving Inhabited
 
-/-- Named arguments created using the notation `(x := val)` -/
+/-- Named arguments created using the notation `(x := val)`. -/
 structure NamedArg where
   ref  : Syntax := Syntax.missing
   name : Name
   val  : Arg
+  /-- If `true`, then make all parameters that depend on this one become implicit.
+  This is used for projection notation, since structure parameters might be explicit for classes. -/
+  suppressDeps : Bool := false
   deriving Inhabited
 
 /--
@@ -34,7 +39,7 @@ partial def expandArgs (args : Array Syntax) : MetaM (Array NamedArg × Array Ar
   let (args, ellipsis) :=
     if args.isEmpty then
       (args, false)
-    else if args.back.isOfKind ``Lean.Parser.Term.ellipsis then
+    else if args.back!.isOfKind ``Lean.Parser.Term.ellipsis then
       (args.pop, true)
     else
       (args, false)

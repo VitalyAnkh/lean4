@@ -3,6 +3,7 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Compiler.LCNF.CompilerM
 import Lean.Compiler.LCNF.InferType
 import Lean.Compiler.LCNF.PassManager
@@ -67,7 +68,7 @@ open ReduceJpArity
 Try to reduce arity of join points
 -/
 def Decl.reduceJpArity (decl : Decl) : CompilerM Decl := do
-  let value ← reduce decl.value |>.run {}
+  let value ← decl.value.mapCodeM reduce |>.run {}
   return { decl with value }
 
 def reduceJpArity (phase := Phase.base) : Pass :=

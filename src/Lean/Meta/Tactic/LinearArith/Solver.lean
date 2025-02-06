@@ -3,9 +3,13 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
-import Lean.Data.Rat
+prelude
+import Init.Data.Ord
+import Init.Data.Array.DecidableEq
+import Std.Internal.Rat
 
 namespace Lean.Meta.Linear
+open Std.Internal
 
 structure Var where
   id : Nat
@@ -26,7 +30,7 @@ abbrev Assignment.size (a : Assignment) : Nat :=
 
 abbrev Assignment.get? (a : Assignment) (x : Var) : Option Rat :=
   if h : x.id < a.size then
-    some (a.val.get ⟨x.id, h⟩)
+    some (a.val[x.id])
   else
     none
 
@@ -44,13 +48,13 @@ abbrev Poly.size (e : Poly) : Nat :=
   e.val.size
 
 abbrev Poly.getMaxVarCoeff (e : Poly) : Int :=
-  e.val.back.1
+  e.val.back!.1
 
 abbrev Poly.getMaxVar (e : Poly) : Var :=
-  e.val.back.2
+  e.val.back!.2
 
 abbrev Poly.get (e : Poly) (i : Fin e.size) : Int × Var :=
-  e.val.get i
+  e.val[i]
 
 def Poly.scale (d : Int) (e : Poly) : Poly :=
   { e with val := e.val.map fun (c, x) => (c*d, x) }
@@ -77,8 +81,9 @@ def Poly.add (e₁ e₂ : Poly) : Poly :=
         go i₁ (i₂+1) (r.push (e₂.get ⟨i₂, h₂⟩))
       else
         { val := r }
+    termination_by (e₁.size - i₁, e₂.size - i₂)
+    decreasing_by all_goals decreasing_with decreasing_trivial_pre_omega
   go 0 0 #[]
-termination_by go i j _ => (e₁.size - i, e₂.size - j)
 
 def Poly.combine (d₁ : Int) (e₁ : Poly) (d₂ : Int) (e₂ : Poly) : Poly :=
   let rec go (i₁ i₂ : Nat) (r : Array (Int × Var)) : Poly :=
@@ -104,8 +109,9 @@ def Poly.combine (d₁ : Int) (e₁ : Poly) (d₂ : Int) (e₂ : Poly) : Poly :=
         go i₁ (i₂+1) (r.push (d₂*c₂, x₂))
       else
         { val := r }
+    termination_by (e₁.size - i₁, e₂.size - i₂)
+    decreasing_by all_goals decreasing_with decreasing_trivial_pre_omega
   go 0 0 #[]
-termination_by go i j _ => (e₁.size - i, e₂.size - j)
 
 def Poly.eval? (e : Poly) (a : Assignment) : Option Rat := Id.run do
   let mut r := 0
@@ -147,7 +153,7 @@ def Cnstr.getBound (c : Cnstr) (a : Assignment) : Rat := Id.run do
       r := r - c*v
     else
       unreachable!
-  let k := c.lhs.val.back.1
+  let k := c.lhs.val.back!.1
   return r / k
 
 def Cnstr.isUnsat (c : Cnstr) (a : Assignment) : Bool :=
@@ -164,7 +170,7 @@ def getBestBound? (cs : Array Cnstr) (a : Assignment) (isLower isInt : Bool) : O
   let adjust (v : Rat) :=
     if isInt then if isLower then (v.ceil : Rat) else v.floor else v
   if h : 0 < cs.size then
-    let c0 := cs.get ⟨0, h⟩
+    let c0 := cs[0]
     let b  := adjust <| c0.getBound a
     some <| cs[1:].foldl (init := (b, c0)) fun r c =>
       let b' := adjust <| c.getBound a

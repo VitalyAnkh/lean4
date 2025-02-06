@@ -3,6 +3,7 @@ Copyright (c) 2022 Mac Malone. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Mac Malone
 -/
+prelude
 import Lake.Config.Module
 
 namespace Lake
@@ -17,7 +18,7 @@ structure LeanExe where
 
 /-- The Lean executables of the package (as an Array). -/
 @[inline] def Package.leanExes (self : Package) : Array LeanExe :=
-  self.leanExeConfigs.fold (fun a _ v => a.push (⟨self, v⟩)) #[]
+  self.leanExeConfigs.foldl (fun a v => a.push ⟨self, v⟩) #[]
 
 /-- Try to find a Lean executable in the package with the given name. -/
 @[inline] def Package.findLeanExe? (name : Name) (self : Package) : Option LeanExe :=
@@ -52,7 +53,7 @@ namespace LeanExe
   name := self.config.root
   keyName := self.pkg.name ++ self.config.root
 
-/-- Return the the root module if the name matches, otherwise return none. -/
+/-- Return the root module if the name matches, otherwise return none. -/
 def isRoot? (name : Name) (self : LeanExe) : Option Module :=
   if name == self.config.root then some self.root else none
 
@@ -61,17 +62,22 @@ The file name of binary executable
 (i.e., `exeName` plus the platform's `exeExtension`).
 -/
 @[inline] def fileName (self : LeanExe) : FilePath :=
-  FilePath.withExtension self.config.exeName FilePath.exeExtension
+  FilePath.addExtension self.config.exeName FilePath.exeExtension
 
 /-- The path to the executable in the package's `binDir`. -/
 @[inline] def file (self : LeanExe) : FilePath :=
   self.pkg.binDir / self.fileName
 
+/-- The executable's `supportInterpreter` configuration. -/
+@[inline] def supportInterpreter (self : LeanExe) : Bool :=
+  self.config.supportInterpreter
+
 /--
 The arguments to pass to `leanc` when linking the binary executable.
 
-That is, `-rdynamic` (if non-Windows and `supportInterpreter`) plus the
-package's and then the executable's `moreLinkArgs`.
+By default, the package's plus the executable's `moreLinkArgs`.
+If `supportInterpreter := true`, Lake prepends `-rdynamic` on non-Windows
+systems.
 -/
 def linkArgs (self : LeanExe) : Array String :=
   if self.config.supportInterpreter && !Platform.isWindows then
@@ -79,10 +85,26 @@ def linkArgs (self : LeanExe) : Array String :=
   else
     self.pkg.moreLinkArgs ++ self.config.moreLinkArgs
 
+/--
+Whether the Lean shared library should be dynamically linked to the executable.
+
+If `supportInterpreter := true`, Lean symbols must be visible to the
+interpreter. On Windows, it is not possible to statically include these
+symbols in the executable due to symbol limits, so Lake dynamically links to
+the Lean shared library. Otherwise, Lean is linked statically.
+-/
+@[inline] def sharedLean (self : LeanExe) : Bool :=
+  strictAnd Platform.isWindows self.config.supportInterpreter
+
+/--
+The arguments to weakly pass to `leanc` when linking the binary executable.
+That is, the package's `weakLinkArgs` plus the executable's  `weakLinkArgs`.
+-/
+@[inline] def weakLinkArgs (self : LeanExe) : Array String :=
+  self.pkg.weakLinkArgs ++ self.config.weakLinkArgs
+
 end LeanExe
 
-/-- Locate the named module in the package (if it is buildable and local to it). -/
-def Package.findModule? (mod : Name) (self : Package) : Option Module :=
-  self.leanExes.findSome? (·.isRoot? mod) <|>
-  self.leanLibs.findSome? (·.findModule? mod)
-
+/-- Locate the named, buildable, but not necessarily importable, module in the package. -/
+def Package.findTargetModule? (mod : Name) (self : Package) : Option Module :=
+  self.leanExes.findSomeRev? (·.isRoot? mod) <|> self.findModule? mod

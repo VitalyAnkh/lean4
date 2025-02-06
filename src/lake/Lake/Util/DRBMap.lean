@@ -3,6 +3,7 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura, Mac Malone
 -/
+prelude
 import Lean.Data.RBMap
 import Lake.Util.Compare
 
@@ -30,6 +31,8 @@ instance inhabitedOfEmptyCollection [EmptyCollection α] : Inhabited α where
 /-- A Dependently typed `RBMap`. -/
 def DRBMap (α : Type u) (β : α → Type v) (cmp : α → α → Ordering) : Type (max u v) :=
   {t : RBNode α β // t.WellFormed cmp }
+
+instance : Coe (DRBMap α (fun _ => β) cmp) (RBMap α β cmp) := ⟨id⟩
 
 @[inline] def mkDRBMap (α : Type u) (β : α → Type v) (cmp : α → α → Ordering) : DRBMap α β cmp :=
   ⟨leaf, WellFormed.leafWff⟩

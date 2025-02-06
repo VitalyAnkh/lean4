@@ -3,6 +3,7 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Meta.Tactic.Assert
 import Lean.Meta.Match.CaseValues
 
@@ -18,7 +19,7 @@ structure CaseArraySizesSubgoal where
 def getArrayArgType (a : Expr) : MetaM Expr := do
   let aType ← inferType a
   let aType ← whnfD aType
-  unless aType.isAppOfArity `Array 1 do
+  unless aType.isAppOfArity ``Array 1 do
     throwError "array expected{indentExpr a}"
   pure aType.appArg!
 
@@ -69,8 +70,8 @@ def caseArraySizes (mvarId : MVarId) (fvarId : FVarId) (sizes : Array Nat) (xNam
       let subst  := subgoal.subst
       let mvarId := subgoal.mvarId
       let hEqSz  := (subst.get hEq).fvarId!
-      if h : i.val < sizes.size then
-         let n := sizes.get ⟨i, h⟩
+      if h : i < sizes.size then
+         let n := sizes[i]
          let mvarId ← mvarId.clear subgoal.newHs[0]!
          let mvarId ← mvarId.clear (subst.get aSizeFVarId).fvarId!
          mvarId.withContext do

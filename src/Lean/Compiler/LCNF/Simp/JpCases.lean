@@ -3,6 +3,7 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Compiler.LCNF.DependsOn
 import Lean.Compiler.LCNF.InferType
 import Lean.Compiler.LCNF.Internalize
@@ -105,7 +106,7 @@ abbrev Ctor2JpCasesAlt := FVarIdMap (NameMap JpCasesAlt)
 
 open Internalize in
 /--
-Construct an auxiliary join point for a particular alternative in a join-point that satifies `isJpCases?`.
+Construct an auxiliary join point for a particular alternative in a join-point that satisfies `isJpCases?`.
 - `decls` is the prefix (before the `cases`). See `isJpCases?`.
 - `params` are the parameters of the main join point that satisfies `isJpCases?`.
 - `targetParamIdx` is the index of the parameter that we are expanding to `fields`
@@ -120,8 +121,8 @@ where
     let mut paramsNew := #[]
     let singleton : FVarIdSet := ({} : FVarIdSet).insert params[targetParamIdx]!.fvarId
     let dependsOnDiscr := k.dependsOn singleton || decls.any (·.dependsOn singleton)
-    for i in [:params.size] do
-      let param := params[i]!
+    for h : i in [:params.size] do
+      let param := params[i]
       if targetParamIdx == i then
         if dependsOnDiscr then
           paramsNew := paramsNew.push (← internalizeParam param)
@@ -149,7 +150,7 @@ private def mkJmpArgsAtJp (params : Array Param) (targetParamIdx : Nat) (fields 
 
 /--
 Try to optimize `jpCases` join points.
-We say a join point is a `jpCases` when it satifies the predicate `isJpCases`.
+We say a join point is a `jpCases` when it satisfies the predicate `isJpCases`.
 If we have a jump to `jpCases` with a constructor, then we can optimize the code by creating an new join point for
 the constructor.
 Example: suppose we have
@@ -299,4 +300,3 @@ builtin_initialize
   registerTraceClass `Compiler.simp.jpCases
 
 end Lean.Compiler.LCNF
-

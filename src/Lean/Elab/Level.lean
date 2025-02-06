@@ -3,6 +3,7 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Log
 import Lean.Parser.Level
 import Lean.Elab.Exception
@@ -59,11 +60,11 @@ partial def elabLevel (stx : Syntax) : LevelElabM Level := withRef stx do
     elabLevel (stx.getArg 1)
   else if kind == ``Lean.Parser.Level.max then
     let args := stx.getArg 1 |>.getArgs
-    args[:args.size - 1].foldrM (init := ← elabLevel args.back) fun stx lvl =>
+    args[:args.size - 1].foldrM (init := ← elabLevel args.back!) fun stx lvl =>
       return mkLevelMax' (← elabLevel stx) lvl
   else if kind == ``Lean.Parser.Level.imax then
     let args := stx.getArg 1 |>.getArgs
-    args[:args.size - 1].foldrM (init := ← elabLevel args.back) fun stx lvl =>
+    args[:args.size - 1].foldrM (init := ← elabLevel args.back!) fun stx lvl =>
       return mkLevelIMax' (← elabLevel stx) lvl
   else if kind == ``Lean.Parser.Level.hole then
     mkFreshLevelMVar
@@ -77,7 +78,7 @@ partial def elabLevel (stx : Syntax) : LevelElabM Level := withRef stx do
       if (← read).autoBoundImplicit && isValidAutoBoundLevelName paramName (relaxedAutoImplicit.get (← read).options) then
         modify fun s => { s with levelNames := paramName :: s.levelNames }
       else
-        throwError "unknown universe level '{paramName}'"
+        throwError "unknown universe level '{mkIdent paramName}'"
     return mkLevelParam paramName
   else if kind == `Lean.Parser.Level.addLit then
     let lvl ← elabLevel (stx.getArg 0)

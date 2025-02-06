@@ -3,6 +3,7 @@ Copyright (c) 2022 Mac Malone. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Mac Malone
 -/
+prelude
 import Lean.Parser.Command
 
 /-!
@@ -147,6 +148,10 @@ attribute [simp] FamilyOut.family_key_eq_type
 instance [FamilyDef Fam a β] : FamilyOut Fam a β where
   family_key_eq_type := FamilyDef.family_key_eq_type
 
+/-- The constant type family -/
+instance : FamilyDef (fun _ => β) a β where
+  family_key_eq_type := rfl
+
 /-- Cast a datum from its individual type to its general family. -/
 @[macro_inline] def toFamily [FamilyOut Fam a β] (b : β) : Fam a :=
   cast FamilyOut.family_key_eq_type.symm b
@@ -171,7 +176,7 @@ scoped macro (name := familyDef) doc?:optional(Parser.Command.docComment)
   let tid := extractMacroScopes fam.getId |>.name
   if let (tid, _) :: _ ← Macro.resolveGlobalName tid then
     let app := Syntax.mkApp fam #[key]
-    let axm := mkIdentFrom fam <| `_root_ ++ tid ++ id.getId
+    let axm := mkIdentFrom id (canonical := true) <| `_root_ ++ tid ++ id.getId
     `($[$doc?]? @[simp] axiom $axm : $app = $ty
     instance : FamilyDef $fam $key $ty := ⟨$axm⟩)
   else

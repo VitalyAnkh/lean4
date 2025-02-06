@@ -3,8 +3,10 @@ Copyright (c) 2022 Mac Malone. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Mac Malone
 -/
+prelude
 import Lake.Build.Trace
 import Lake.Config.LeanLib
+import Lake.Config.OutFormat
 import Lake.Util.OrdHashSet
 
 namespace Lake
@@ -20,11 +22,14 @@ structure Module where
   -/
   keyName : Name := name
 
+instance : ToText Module := ⟨(·.name.toString)⟩
+instance : ToJson Module := ⟨(toJson ·.name)⟩
+
 instance : Hashable Module where hash m := hash m.keyName
 instance : BEq Module where beq m n := m.keyName == n.keyName
 
-abbrev ModuleSet := HashSet Module
-@[inline] def ModuleSet.empty : ModuleSet := HashSet.empty
+abbrev ModuleSet := Std.HashSet Module
+@[inline] def ModuleSet.empty : ModuleSet := Std.HashSet.empty
 
 abbrev OrdModuleSet := OrdHashSet Module
 @[inline] def OrdModuleSet.empty : OrdModuleSet := OrdHashSet.empty
@@ -32,9 +37,16 @@ abbrev OrdModuleSet := OrdHashSet Module
 abbrev ModuleMap (α) := RBMap Module α (·.name.quickCmp ·.name)
 @[inline] def ModuleMap.empty : ModuleMap α := RBMap.empty
 
-/-- Locate the named module in the library (if it is buildable and local to it). -/
+/--
+Locate the named, buildable module in the library
+(which implies it is local and importable).
+-/
 def LeanLib.findModule? (mod : Name) (self : LeanLib) : Option Module :=
   if self.isBuildableModule mod then some {lib := self, name := mod} else none
+
+/--  Locate the named, buildable, importable, local module in the package.  -/
+def Package.findModule? (mod : Name) (self : Package) : Option Module :=
+  self.leanLibs.findSomeRev? (·.findModule? mod)
 
 /-- Get an `Array` of the library's modules (as specified by its globs). -/
 def LeanLib.getModuleArray (self : LeanLib) : IO (Array Module) :=
@@ -82,11 +94,23 @@ abbrev pkg (self : Module) : Package :=
 @[inline] def cFile (self : Module) : FilePath :=
   self.irPath "c"
 
-@[inline] def oFile (self : Module) : FilePath :=
-  self.irPath "o"
+@[inline] def coExportFile (self : Module) : FilePath :=
+  self.irPath "c.o.export"
+
+@[inline] def coNoExportFile (self : Module) : FilePath :=
+  self.irPath "c.o.noexport"
+
+@[inline] def bcFile (self : Module) : FilePath :=
+  self.irPath "bc"
+
+def bcFile? (self : Module) : Option FilePath :=
+  if Lean.Internal.hasLLVMBackend () then some self.bcFile else none
+
+@[inline] def bcoFile (self : Module) : FilePath :=
+  self.irPath "bc.o"
 
 /-- Suffix for single module dynlibs (e.g., for precompilation). -/
-@[noinline] def dynlibSuffix := "-1"
+def dynlibSuffix := "-1"
 
 @[inline] def dynlibName (self : Module) : String :=
   -- NOTE: file name MUST be unique on Windows
@@ -95,8 +119,14 @@ abbrev pkg (self : Module) : Package :=
 @[inline] def dynlibFile (self : Module) : FilePath :=
   self.pkg.nativeLibDir / nameToSharedLib self.dynlibName
 
+@[inline] def serverOptions (self : Module) : Array LeanOption :=
+  self.lib.serverOptions
+
 @[inline] def buildType (self : Module) : BuildType :=
   self.lib.buildType
+
+@[inline] def backend (self : Module) : Backend :=
+  self.lib.backend
 
 @[inline] def leanArgs (self : Module) : Array String :=
   self.lib.leanArgs
@@ -107,28 +137,37 @@ abbrev pkg (self : Module) : Package :=
 @[inline] def leancArgs (self : Module) : Array String :=
   self.lib.leancArgs
 
+@[inline] def weakLeancArgs (self : Module) : Array String :=
+  self.lib.weakLeancArgs
+
 @[inline] def linkArgs (self : Module) : Array String :=
   self.lib.linkArgs
+
+@[inline] def weakLinkArgs (self : Module) : Array String :=
+  self.lib.weakLinkArgs
+
+@[inline] def platformIndependent (self : Module) : Option Bool :=
+  self.lib.platformIndependent
 
 @[inline] def shouldPrecompile (self : Module) : Bool :=
   self.lib.precompileModules
 
-@[inline] def nativeFacets (self : Module) : Array (ModuleFacet (BuildJob FilePath)) :=
-  self.lib.nativeFacets
+@[inline] def nativeFacets (self : Module) (shouldExport : Bool) : Array (ModuleFacet FilePath) :=
+  self.lib.nativeFacets shouldExport
 
 /-! ## Trace Helpers -/
 
 protected def getMTime (self : Module) : IO MTime := do
-  return mixTrace (← getMTime self.oleanFile) (← getMTime self.ileanFile)
+  return mixTrace (mixTrace (← getMTime self.oleanFile) (← getMTime self.ileanFile)) (← getMTime self.cFile)
 
 instance : GetMTime Module := ⟨Module.getMTime⟩
 
-protected def computeHash (self : Module) : IO Hash := do
-  return mixTrace (← computeHash self.oleanFile) (← computeHash self.ileanFile)
-
-instance : ComputeHash Module IO := ⟨Module.computeHash⟩
-
 protected def checkExists (self : Module) : BaseIO Bool := do
-  return (← checkExists self.oleanFile) && (← checkExists self.ileanFile)
+  let bcFileExists? ←
+    if Lean.Internal.hasLLVMBackend () then
+      checkExists self.bcFile
+    else
+      pure true
+  return (← checkExists self.oleanFile) && (← checkExists self.ileanFile) && (← checkExists self.cFile) && bcFileExists?
 
 instance : CheckExists Module := ⟨Module.checkExists⟩

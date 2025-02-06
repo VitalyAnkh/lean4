@@ -3,6 +3,7 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Compiler.IR.Basic
 
 namespace Lean
@@ -54,6 +55,7 @@ instance : ToString Expr := ⟨fun e => Format.pretty (format e)⟩
 
 private partial def formatIRType : IRType → Format
   | IRType.float        => "float"
+  | IRType.float32      => "float32"
   | IRType.uint8        => "u8"
   | IRType.uint16       => "u16"
   | IRType.uint32       => "u32"

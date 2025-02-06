@@ -3,6 +3,7 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Meta.Check
 import Lean.Meta.CollectFVars
 import Lean.Meta.Match.MatcherInfo
@@ -136,7 +137,7 @@ structure Alt where
   /-- `Syntax` object for providing position information -/
   ref       : Syntax
   /--
-  Orginal alternative index. Alternatives can be split, this index is the original
+  Original alternative index. Alternatives can be split, this index is the original
   position of the alternative that generated this one.
   -/
   idx       : Nat
@@ -279,7 +280,7 @@ partial def varsToUnderscore : Example → Example
 partial def toMessageData : Example → MessageData
   | var fvarId        => mkFVar fvarId
   | ctor ctorName []  => mkConst ctorName
-  | ctor ctorName exs => m!"({mkConst ctorName}{exs.foldl (fun msg pat => m!"{msg} {toMessageData pat}") Format.nil})"
+  | ctor ctorName exs => m!"({.ofConstName ctorName}{exs.foldl (fun msg pat => m!"{msg} {toMessageData pat}") Format.nil})"
   | arrayLit exs      => "#" ++ MessageData.ofList (exs.map toMessageData)
   | val e             => e
   | underscore        => "_"
@@ -342,7 +343,7 @@ partial def toPattern (e : Expr) : MetaM Pattern := do
         match e.getArg! 1, e.getArg! 3 with
         | Expr.fvar x, Expr.fvar h => return Pattern.as x p h
         | _,           _   => throwError "unexpected occurrence of auxiliary declaration 'namedPattern'"
-      else if isMatchValue e then
+      else if (← isMatchValue e) then
         return Pattern.val e
       else if e.isFVar then
         return Pattern.var e.fvarId!

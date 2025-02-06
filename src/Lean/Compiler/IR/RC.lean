@@ -3,14 +3,16 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Runtime
 import Lean.Compiler.IR.CompilerM
 import Lean.Compiler.IR.LiveVars
 
 namespace Lean.IR.ExplicitRC
-/-! Insert explicit RC instructions. So, it assumes the input code does not contain `inc` nor `dec` instructions.
-   This transformation is applied before lower level optimizations
-   that introduce the instructions `release` and `set`
+/-!
+Insert explicit RC instructions. So, it assumes the input code does not contain `inc` nor `dec` instructions.
+This transformation is applied before lower level optimizations
+that introduce the instructions `release` and `set`
 -/
 
 structure VarInfo where
@@ -77,19 +79,19 @@ private def addDecForAlt (ctx : Context) (caseLiveVars altLiveVars : LiveVarSet)
 /-- `isFirstOcc xs x i = true` if `xs[i]` is the first occurrence of `xs[i]` in `xs` -/
 private def isFirstOcc (xs : Array Arg) (i : Nat) : Bool :=
   let x := xs[i]!
-  i.all fun j => xs[j]! != x
+  i.all fun j _ => xs[j]! != x
 
 /-- Return true if `x` also occurs in `ys` in a position that is not consumed.
    That is, it is also passed as a borrow reference. -/
 private def isBorrowParamAux (x : VarId) (ys : Array Arg) (consumeParamPred : Nat → Bool) : Bool :=
-  ys.size.any fun i =>
-    let y := ys[i]!
+  ys.size.any fun i _ =>
+    let y := ys[i]
     match y with
     | Arg.irrelevant => false
     | Arg.var y      => x == y && !consumeParamPred i
 
 private def isBorrowParam (x : VarId) (ys : Array Arg) (ps : Array Param) : Bool :=
-  isBorrowParamAux x ys fun i => not ps[i]!.borrow
+  isBorrowParamAux x ys fun i => ! ps[i]!.borrow
 
 /--
 Return `n`, the number of times `x` is consumed.
@@ -97,15 +99,15 @@ Return `n`, the number of times `x` is consumed.
 - `consumeParamPred i = true` if parameter `i` is consumed.
 -/
 private def getNumConsumptions (x : VarId) (ys : Array Arg) (consumeParamPred : Nat → Bool) : Nat :=
-  ys.size.fold (init := 0) fun i n =>
-    let y := ys[i]!
+  ys.size.fold (init := 0) fun i _ n =>
+    let y := ys[i]
     match y with
     | Arg.irrelevant => n
     | Arg.var y      => if x == y && consumeParamPred i then n+1 else n
 
 private def addIncBeforeAux (ctx : Context) (xs : Array Arg) (consumeParamPred : Nat → Bool) (b : FnBody) (liveVarsAfter : LiveVarSet) : FnBody :=
-  xs.size.fold (init := b) fun i b =>
-    let x := xs[i]!
+  xs.size.fold (init := b) fun i _ b =>
+    let x := xs[i]
     match x with
     | Arg.irrelevant => b
     | Arg.var x =>
@@ -122,12 +124,12 @@ private def addIncBeforeAux (ctx : Context) (xs : Array Arg) (consumeParamPred :
         addInc ctx x b numIncs
 
 private def addIncBefore (ctx : Context) (xs : Array Arg) (ps : Array Param) (b : FnBody) (liveVarsAfter : LiveVarSet) : FnBody :=
-  addIncBeforeAux ctx xs (fun i => not ps[i]!.borrow) b liveVarsAfter
+  addIncBeforeAux ctx xs (fun i => ! ps[i]!.borrow) b liveVarsAfter
 
 /-- See `addIncBeforeAux`/`addIncBefore` for the procedure that inserts `inc` operations before an application.  -/
 private def addDecAfterFullApp (ctx : Context) (xs : Array Arg) (ps : Array Param) (b : FnBody) (bLiveVars : LiveVarSet) : FnBody :=
-xs.size.fold (init := b) fun i b =>
-  match xs[i]! with
+xs.size.fold (init := b) fun i _ b =>
+  match xs[i] with
   | Arg.irrelevant => b
   | Arg.var x      =>
     /- We must add a `dec` if `x` must be consumed, it is alive after the application,

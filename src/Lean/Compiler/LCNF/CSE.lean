@@ -3,6 +3,7 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Compiler.LCNF.CompilerM
 import Lean.Compiler.LCNF.ToExpr
 import Lean.Compiler.LCNF.PassManager
@@ -101,7 +102,7 @@ end CSE
 Common sub-expression elimination
 -/
 def Decl.cse (decl : Decl) : CompilerM Decl := do
-  let value ← decl.value.cse
+  let value ← decl.value.mapCodeM (·.cse)
   return { decl with value }
 
 def cse (phase : Phase := .base) (occurrence := 0) : Pass :=

@@ -181,16 +181,6 @@ bool has_and_decls(environment const & env) {
     return has_constructor(env, get_and_intro_name(), get_and_name(), 4);
 }
 
-/* n is considered to be recursive if it is an inductive datatype and
-   1) It has a constructor that takes n as an argument
-   2) It is part of a mutually recursive declaration, and some constructor
-      of an inductive datatype takes another inductive datatype from the
-      same declaration as an argument. */
-bool is_recursive_datatype(environment const & env, name const & n) {
-    constant_info info = env.get(n);
-    return info.is_inductive() && info.to_inductive_val().is_rec();
-}
-
 static name * g_util_fresh = nullptr;
 
 level get_datatype_level(environment const & env, expr const & ind_type) {
@@ -826,6 +816,9 @@ optional<name> is_unsafe_rec_name(name const & n) {
     return option_ref<name>(lean_is_unsafe_rec_name(n.to_obj_arg())).get();
 }
 
+static std::string * g_short_version_string = nullptr;
+std::string const & get_short_version_string() { return *g_short_version_string; }
+
 static std::string * g_version_string = nullptr;
 std::string const & get_version_string() { return *g_version_string; }
 
@@ -868,16 +861,12 @@ void initialize_library_util() {
 
     sstream out;
 
-    out << LEAN_VERSION_MAJOR << "."
-        << LEAN_VERSION_MINOR << "." << LEAN_VERSION_PATCH;
-    if (std::strlen(LEAN_SPECIAL_VERSION_DESC) > 0) {
-        out << "-" << LEAN_SPECIAL_VERSION_DESC;
+    out << LEAN_VERSION_STRING;
+    g_short_version_string = new std::string(out.str());
+    if (std::strlen(LEAN_PLATFORM_TARGET) > 0) {
+        out << ", " << LEAN_PLATFORM_TARGET;
     }
-    if (std::strlen(LEAN_GITHASH) == 0) {
-        if (std::strcmp(LEAN_PACKAGE_VERSION, "NOT-FOUND") != 0) {
-            out << ", package " << LEAN_PACKAGE_VERSION;
-        }
-    } else {
+    if (std::strlen(LEAN_GITHASH) > 0) {
         out << ", commit " << std::string(LEAN_GITHASH).substr(0, 12);
     }
     g_version_string = new std::string(out.str());

@@ -3,7 +3,9 @@ Copyright (c) 2020 Sebastian Ullrich. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Sebastian Ullrich
 -/
+prelude
 import Lean.Meta.ReduceEval
+import Lean.Meta.WHNF
 import Lean.KeyedDeclsAttribute
 import Lean.ParserCompiler.Attribute
 import Lean.Parser.Extension
@@ -44,7 +46,7 @@ partial def parserNodeKind? (e : Expr) : MetaM (Option Name) := do
   else forallTelescope (← inferType e.getAppFn) fun params _ => do
     let lctx ← getLCtx
     -- if there is exactly one parameter of type `Parser`, search there
-    if let [(i, _)] := params.toList.enum.filter (lctx.getFVar! ·.2 |>.type.isConstOf ``Parser) then
+    if let #[(_, i)] := params.zipIdx.filter (lctx.getFVar! ·.1 |>.type.isConstOf ``Parser) then
       parserNodeKind? (e.getArg! i)
     else
       return none
@@ -86,7 +88,7 @@ partial def compileParserExpr (e : Expr) : MetaM Expr := do
       let c' := c ++ ctx.varName
       let cinfo ← getConstInfo c
       let resultTy ← forallTelescope cinfo.type fun _ b => pure b
-      if resultTy.isConstOf `Lean.Parser.TrailingParser || resultTy.isConstOf `Lean.Parser.Parser then do
+      if resultTy.isConstOf ``Lean.Parser.TrailingParser || resultTy.isConstOf ``Lean.Parser.Parser then do
         -- synthesize a new `[combinatorAttr c]`
         let some value ← pure cinfo.value?
           | throwError "don't know how to generate {ctx.varName} for non-definition '{e}'"
@@ -101,11 +103,8 @@ partial def compileParserExpr (e : Expr) : MetaM Expr := do
           name := c', levelParams := []
           type := ty, value := value, hints := ReducibilityHints.opaque, safety := DefinitionSafety.safe
         }
-        let env ← getEnv
-        let env ← match env.addAndCompile {} decl with
-          | Except.ok    env => pure env
-          | Except.error kex => do throwError (← (kex.toMessageData {}).toString)
-        setEnv <| ctx.combinatorAttr.setDeclFor env c c'
+        addAndCompile decl
+        modifyEnv (ctx.combinatorAttr.setDeclFor · c c')
         if cinfo.type.isConst then
           if let some kind ← parserNodeKind? cinfo.value! then
             -- If the parser is parameter-less and produces a node of kind `kind`,
@@ -145,7 +144,7 @@ unsafe def registerParserCompiler {α} (ctx : Context α) : IO Unit := do
   Parser.registerParserAttributeHook {
     postAdd := fun catName constName builtin => do
       let info ← getConstInfo constName
-      if info.type.isConstOf `Lean.ParserDescr || info.type.isConstOf `Lean.TrailingParserDescr then
+      if info.type.isConstOf ``Lean.ParserDescr || info.type.isConstOf ``Lean.TrailingParserDescr then
         let d ← evalConstCheck ParserDescr `Lean.ParserDescr constName <|>
           evalConstCheck TrailingParserDescr `Lean.TrailingParserDescr constName
         compileEmbeddedParsers ctx d (builtin := builtin) |>.run'

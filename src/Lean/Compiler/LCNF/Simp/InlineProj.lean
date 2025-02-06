@@ -3,6 +3,7 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Compiler.LCNF.Simp.SimpM
 
 namespace Lean.Compiler.LCNF
@@ -68,11 +69,14 @@ where
           visit fvarId projs
       else
         let some decl ← getDecl? declName | failure
-        guard (decl.getArity == args.size)
-        let params := decl.instantiateParamsLevelParams us
-        let code := decl.instantiateValueLevelParams us
-        let code ← betaReduce params code args (mustInline := true)
-        visitCode code projs
+        match decl.value with
+        | .code code =>
+          guard (decl.getArity == args.size)
+          let params := decl.instantiateParamsLevelParams us
+          let code := code.instantiateValueLevelParams decl.levelParams us
+          let code ← betaReduce params code args (mustInline := true)
+          visitCode code projs
+        | .extern .. => failure
 
   visitCode (code : Code) (projs : List Nat) : OptionT (StateRefT (Array CodeDecl) SimpM) FVarId := do
     match code with

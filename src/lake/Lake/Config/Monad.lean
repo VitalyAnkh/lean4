@@ -3,11 +3,12 @@ Copyright (c) 2021 Mac Malone. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Mac Malone
 -/
+prelude
 import Lake.Config.Context
 import Lake.Config.Workspace
 
 open System
-open Lean (Name)
+open Lean (Name NameMap)
 
 /-! # Lake Configuration Monads
 Definitions and helpers for interacting with the Lake configuration monads.
@@ -19,44 +20,58 @@ namespace Lake
 abbrev MonadLakeEnv (m : Type → Type u) :=
   MonadReaderOf Lake.Env m
 
+/-- A transformer to equip a monad with a `Lake.Env`. -/
+abbrev LakeEnvT := ReaderT Lake.Env
+
+@[inline] def LakeEnvT.run (env : Lake.Env) (self : LakeEnvT m α) : m α :=
+  ReaderT.run self env
+
 /-- A monad equipped with a (read-only) Lake `Workspace`. -/
-abbrev MonadWorkspace (m : Type → Type u) :=
-  MonadReaderOf Workspace m
+class MonadWorkspace (m : Type → Type u) where
+  getWorkspace : m Workspace
+
+export MonadWorkspace (getWorkspace)
+
+instance [MonadReaderOf Workspace m] : MonadWorkspace m where
+  getWorkspace := read
+
+instance [MonadStateOf Workspace m] : MonadWorkspace m where
+  getWorkspace := get
 
 /-- A monad equipped with a (read-only) Lake context. -/
 abbrev MonadLake (m : Type → Type u) :=
-  MonadReaderOf Context m
+  MonadReaderOf Lake.Context m
 
 /-- Make a `Lake.Context` from a `Workspace`. -/
-@[inline] def mkLakeContext (ws : Workspace) : Context where
+@[inline] def mkLakeContext (ws : Workspace) : Lake.Context where
   opaqueWs := ws
 
+/-- Run a `LakeT` monad in the context of this workspace. -/
+@[inline] def Workspace.runLakeT (ws : Workspace) (x : LakeT m α) : m α :=
+  x.run (mkLakeContext ws)
+
 instance [MonadWorkspace m] [Functor m] : MonadLake m where
-  read := (mkLakeContext ·) <$> read
+  read := (mkLakeContext ·) <$> getWorkspace
 
 @[inline] def Context.workspace (self : Context) :=
   self.opaqueWs.get
 
 instance [MonadLake m] [Functor m] : MonadWorkspace m where
-  read := (·.workspace) <$> read
+  getWorkspace := (·.workspace) <$> read
 
 instance [MonadWorkspace m] [Functor m] : MonadLakeEnv m where
-  read := (·.lakeEnv) <$> read
+  read := (·.lakeEnv) <$> getWorkspace
 
 section
 variable [MonadWorkspace m]
 
 /-! ## Workspace Helpers -/
 
-/-- Get the workspace of the context. -/
-@[inline] def getWorkspace : m Workspace :=
-  read
-
 variable [Functor m]
 
 /-- Get the root package of the context's workspace. -/
 @[inline] def getRootPackage : m Package :=
-  (·.root) <$> read
+  (·.root) <$> getWorkspace
 
 @[inherit_doc Workspace.findPackage?, inline]
 def findPackage? (name : Name) : m (Option (NPackage name)) :=
@@ -109,12 +124,30 @@ def findExternLib? (name : Name) : m (Option ExternLib) :=
 end
 
 section
-variable [MonadLakeEnv m] [Functor m]
+variable [MonadLakeEnv m]
 
 /-! ## Environment Helpers -/
 
 @[inline] def getLakeEnv : m Lake.Env :=
   read
+
+variable [Functor m]
+
+/-- Get the `LAKE_NO_CACHE`/`--no-cache` Lake configuration. -/
+@[inline] def getNoCache [Functor m] [MonadBuild m] : m Bool :=
+  (·.noCache) <$> getLakeEnv
+
+/-- Get whether the `LAKE_NO_CACHE`/`--no-cache` Lake configuration is **NOT** set. -/
+@[inline] def getTryCache [Functor m] [MonadBuild m] : m Bool :=
+  (!·.noCache) <$> getLakeEnv
+
+/-- Get the `LAKE_PACKAGE_URL_MAP` for the Lake environment. Empty if none. -/
+@[inline] def getPkgUrlMap : m (NameMap String) :=
+  (·.pkgUrlMap) <$> getLakeEnv
+
+/-- Get the name of Elan toolchain for the Lake environment. Empty if none. -/
+@[inline] def getElanToolchain : m String :=
+  (·.toolchain) <$> getLakeEnv
 
 /-! ### Search Path Helpers -/
 
@@ -129,6 +162,20 @@ variable [MonadLakeEnv m] [Functor m]
 /-- Get the detected `sharedLibPathEnvVar` value of the Lake environment. -/
 @[inline] def getEnvSharedLibPath : m SearchPath :=
   (·.sharedLibPath) <$> getLakeEnv
+
+/-! ### Elan Install Helpers -/
+
+/-- Get the detected Elan installation (if one). -/
+@[inline] def getElanInstall? : m (Option ElanInstall) :=
+  (·.elan?) <$> getLakeEnv
+
+/-- Get the root directory of the detected Elan installation (i.e., `ELAN_HOME`). -/
+@[inline] def getElanHome? : m (Option FilePath) :=
+  (·.map (·.home)) <$> getElanInstall?
+
+/-- Get the path of the `elan` binary in the detected Elan installation. -/
+@[inline] def getElan? : m (Option FilePath) :=
+  (·.map (·.elan)) <$> getElanInstall?
 
 /-! ### Lean Install Helpers -/
 

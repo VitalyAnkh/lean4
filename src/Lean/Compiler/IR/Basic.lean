@@ -3,6 +3,7 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Data.KVMap
 import Lean.Data.Name
 import Lean.Data.Format
@@ -23,12 +24,12 @@ abbrev Index := Nat
 /-- Variable identifier -/
 structure VarId where
   idx : Index
-  deriving Inhabited
+  deriving Inhabited, Repr
 
 /-- Join point identifier -/
 structure JoinPointId where
   idx : Index
-  deriving Inhabited
+  deriving Inhabited, Repr
 
 abbrev Index.lt (a b : Index) : Bool := a < b
 
@@ -80,14 +81,16 @@ then one of the following must hold in each (execution) branch.
 inductive IRType where
   | float | uint8 | uint16 | uint32 | uint64 | usize
   | irrelevant | object | tobject
+  | float32
   | struct (leanTypeName : Option Name) (types : Array IRType) : IRType
   | union (leanTypeName : Name) (types : Array IRType) : IRType
-  deriving Inhabited
+  deriving Inhabited, Repr
 
 namespace IRType
 
 partial def beq : IRType → IRType → Bool
   | float,          float          => true
+  | float32,        float32        => true
   | uint8,          uint8          => true
   | uint16,         uint16         => true
   | uint32,         uint32         => true
@@ -103,13 +106,14 @@ partial def beq : IRType → IRType → Bool
 instance : BEq IRType := ⟨beq⟩
 
 def isScalar : IRType → Bool
-  | float  => true
-  | uint8  => true
-  | uint16 => true
-  | uint32 => true
-  | uint64 => true
-  | usize  => true
-  | _      => false
+  | float    => true
+  | float32  => true
+  | uint8    => true
+  | uint16   => true
+  | uint32   => true
+  | uint64   => true
+  | usize    => true
+  | _        => false
 
 def isObj : IRType → Bool
   | object  => true
@@ -235,7 +239,7 @@ structure Param where
   x : VarId
   borrow : Bool
   ty : IRType
-  deriving Inhabited
+  deriving Inhabited, Repr
 
 @[export lean_ir_mk_param]
 def mkParam (x : VarId) (borrow : Bool) (ty : IRType) : Param := ⟨x, borrow, ty⟩
@@ -610,10 +614,11 @@ def mkIf (x : VarId) (t e : FnBody) : FnBody :=
 
 def getUnboxOpName (t : IRType) : String :=
   match t with
-  | IRType.usize  => "lean_unbox_usize"
-  | IRType.uint32 => "lean_unbox_uint32"
-  | IRType.uint64 => "lean_unbox_uint64"
-  | IRType.float  => "lean_unbox_float"
-  | _             => "lean_unbox"
+  | IRType.usize    => "lean_unbox_usize"
+  | IRType.uint32   => "lean_unbox_uint32"
+  | IRType.uint64   => "lean_unbox_uint64"
+  | IRType.float    => "lean_unbox_float"
+  | IRType.float32  => "lean_unbox_float32"
+  | _               => "lean_unbox"
 
 end Lean.IR

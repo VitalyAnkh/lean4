@@ -3,11 +3,11 @@ mkConstTuple : {α : Type u_1} → α → Nat → ◾
 Fin.add : {n : Nat} → Fin ◾ → Fin ◾ → Fin ◾
 Vec.cons : {α : Type u} → {n : Nat} → α → Vec α ◾ → Vec α ◾
 Eq.rec : {α : Sort u_1} → {a : α} → {motive : α → ◾ → Sort u} → motive ◾ ◾ → {a : α} → ◾ → motive ◾ ◾
-GetElem.getElem : {cont : Type u} →
+GetElem.getElem : {coll : Type u} →
   {idx : Type v} →
-    {elem : Type w} → {dom : cont → idx → Prop} → [self : GetElem cont idx elem ◾] → cont → idx → ◾ → elem
-Term.constFold : {ctx : List Ty} → {ty : Ty} → Term ◾ ◾ → Term ◾ ◾
-Term.denote : {ctx : List Ty} → {ty : Ty} → Term ◾ ◾ → HList ◾ ◾ → ◾
+    {elem : Type w} → {valid : coll → idx → Prop} → [self : GetElem coll idx elem ◾] → coll → idx → ◾ → elem
+Term.constFold : {ctx : List Ty} → {ty : Ty} → _root_.Term ◾ ◾ → _root_.Term ◾ ◾
+Term.denote : {ctx : List Ty} → {ty : Ty} → _root_.Term ◾ ◾ → HList ◾ ◾ → ◾
 HList.get : {α : Type u_1} → {β : α → Type u_2} → {is : List α} → {i : α} → HList β ◾ → Member ◾ ◾ → β ◾
 Member.head : {α : Type u_1} → {a : α} → {as : List α} → Member ◾ ◾
 Ty.denote : Ty → Type
@@ -15,47 +15,41 @@ MonadControl.liftWith : {m : Type u → Type v} →
   {n : Type u → Type w} → [self : MonadControl m n] → {α : Type u} → (({β : Type u} → n β → m ◾) → m α) → n α
 MonadControl.restoreM : {m : Type u → Type v} → {n : Type u → Type w} → [self : MonadControl m n] → {α : Type u} → m ◾ → n α
 Decidable.casesOn : {p : Prop} → {motive : Decidable ◾ → Sort u} → Decidable ◾ → (◾ → motive ◾) → (◾ → motive ◾) → motive ◾
-Lean.getConstInfo : {m : Type → Type} →
-  [inst : Monad m] → [inst : Lean.MonadEnv m] → [inst : Lean.MonadError m] → Lean.Name → m Lean.ConstantInfo
+Lean.getConstInfo : {m : Type → Type} → [inst : Monad m] → [inst : MonadEnv m] → [inst : MonadError m] → Name → m ConstantInfo
 Lean.Meta.instMonadMetaM : Monad fun α =>
-  Lean.Meta.Context →
-    ST.Ref PUnit Lean.Meta.State →
-      Lean.Core.Context → ST.Ref PUnit Lean.Core.State → PUnit → EStateM.Result Lean.Exception PUnit α
-Lean.Meta.inferType : Lean.Expr →
-  Lean.Meta.Context →
-    ST.Ref PUnit Lean.Meta.State →
-      Lean.Core.Context → ST.Ref PUnit Lean.Core.State → PUnit → EStateM.Result Lean.Exception PUnit Lean.Expr
-Lean.Elab.Term.elabTerm : Lean.Syntax →
-  Option Lean.Expr →
+  Context → ST.Ref PUnit State → Core.Context → ST.Ref PUnit Core.State → PUnit → EStateM.Result Exception PUnit α
+Lean.Meta.inferType : Expr →
+  Context → ST.Ref PUnit State → Core.Context → ST.Ref PUnit Core.State → PUnit → EStateM.Result Exception PUnit Expr
+Lean.Elab.Term.elabTerm : Syntax →
+  Option Expr →
     Bool →
       Bool →
-        Lean.Elab.Term.Context →
-          ST.Ref PUnit Lean.Elab.Term.State →
-            Lean.Meta.Context →
-              ST.Ref PUnit Lean.Meta.State →
-                Lean.Core.Context → ST.Ref PUnit Lean.Core.State → PUnit → EStateM.Result Lean.Exception PUnit Lean.Expr
+        Elab.Term.Context →
+          ST.Ref PUnit Elab.Term.State →
+            Context →
+              ST.Ref PUnit State → Core.Context → ST.Ref PUnit Core.State → PUnit → EStateM.Result Exception PUnit Expr
 Nat.add : Nat → Nat → Nat
 Magma.mul : Magma → ◾ → ◾ → ◾
 weird1 : Bool → ◾
 lamAny₁ : Bool → Monad ◾
 lamAny₂ : Bool → Monad ◾
-Term.constFold : List Ty → Ty → Term ◾ ◾ → Term ◾ ◾
-Term.denote : List Ty → Ty → Term ◾ ◾ → HList Ty ◾ ◾ → ◾
-HList.get : ◾ → ◾ → List ◾ → ◾ → HList ◾ ◾ ◾ → Member ◾ ◾ ◾ → ◾
-Member.head : ◾ → ◾ → List ◾ → Member ◾ ◾ ◾
-Ty.denote : ◾
-MonadControl.liftWith : ◾ → ◾ → MonadControl ◾ ◾ → ◾ → ((◾ → ◾ → ◾) → ◾) → ◾
-MonadControl.restoreM : ◾ → ◾ → MonadControl ◾ ◾ → ◾ → ◾ → ◾
-Decidable.casesOn : ◾ → ◾ → Bool → (◾ → ◾) → (◾ → ◾) → ◾
-Lean.getConstInfo : ◾ → Monad ◾ → Lean.MonadEnv ◾ → Lean.MonadError ◾ → Lean.Name → ◾
-Lean.Meta.instMonadMetaM : Monad ◾
-Lean.Meta.inferType : Lean.Expr → Lean.Meta.Context → ◾ → Lean.Core.Context → ◾ → PUnit → EStateM.Result Lean.Exception PUnit Lean.Expr
-Lean.Elab.Term.elabTerm : Lean.Syntax →
-  Option Lean.Expr →
+Term.constFold : List Ty → Ty → _root_.Term lcErased lcErased → _root_.Term lcErased lcErased
+Term.denote : lcErased
+HList.get : lcErased → lcErased → List lcAny → lcAny → HList lcAny lcErased lcErased → Member lcAny lcErased lcErased → lcAny
+Member.head : lcErased → lcAny → List lcAny → Member lcAny lcErased lcErased
+Ty.denote : lcErased
+MonadControl.liftWith : lcErased → lcErased → MonadControl lcErased lcErased → lcErased → ((lcErased → lcAny → lcAny) → lcAny) → lcAny
+MonadControl.restoreM : lcErased → lcErased → MonadControl lcErased lcErased → lcErased → lcAny → lcAny
+Decidable.casesOn : lcErased → lcErased → Bool → (lcErased → lcAny) → (lcErased → lcAny) → lcAny
+Lean.getConstInfo : lcErased → Monad lcErased → MonadEnv lcErased → MonadError lcErased → Name → lcAny
+Lean.Meta.instMonadMetaM : Monad lcErased
+Lean.Meta.inferType : Expr → Context → lcErased → Core.Context → lcErased → PUnit → EStateM.Result Exception PUnit Expr
+Lean.Elab.Term.elabTerm : Syntax →
+  Option Expr →
     Bool →
       Bool →
-        Lean.Elab.Term.Context →
-          ◾ → Lean.Meta.Context → ◾ → Lean.Core.Context → ◾ → PUnit → EStateM.Result Lean.Exception PUnit Lean.Expr
+        Elab.Term.Context →
+          lcErased → Context → lcErased → Core.Context → lcErased → PUnit → EStateM.Result Exception PUnit Expr
 Nat.add : Nat → Nat → Nat
 Fin.add : Nat → Nat → Nat → Nat
-Lean.HashSetBucket.update : ◾ → Array (List ◾) → USize → List ◾ → ◾ → Array (List ◾)
+Lean.HashSetBucket.update : lcErased → Array (List lcAny) → USize → List lcAny → lcErased → Array (List lcAny)

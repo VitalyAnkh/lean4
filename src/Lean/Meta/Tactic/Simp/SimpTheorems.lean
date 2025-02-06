@@ -3,6 +3,7 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.ScopedEnvExtension
 import Lean.Util.Recognizers
 import Lean.Meta.DiscrTree
@@ -10,6 +11,7 @@ import Lean.Meta.AppBuilder
 import Lean.Meta.Eqns
 import Lean.Meta.Tactic.AuxLemma
 import Lean.DocString
+import Lean.PrettyPrinter
 namespace Lean.Meta
 
 /--
@@ -18,7 +20,7 @@ what action the user took which lead to this theorem existing in the simp set.
 -/
 inductive Origin where
   /-- A global declaration in the environment. -/
-  | decl (declName : Name)
+  | decl (declName : Name) (post := true) (inv := false)
   /--
   A local hypothesis.
   When `contextual := true` is enabled, this fvar may exist in an extension
@@ -42,16 +44,46 @@ inductive Origin where
 
 /-- A unique identifier corresponding to the origin. -/
 def Origin.key : Origin → Name
-  | .decl declName => declName
+  | .decl declName _ _ => declName
   | .fvar fvarId => fvarId.name
   | .stx id _ => id
   | .other name => name
 
-instance : BEq Origin := ⟨(·.key == ·.key)⟩
-instance : Hashable Origin := ⟨(hash ·.key)⟩
+/-- The origin corresponding to the converse direction (`← thm` vs. `thm`) -/
+def Origin.converse : Origin → Option Origin
+  | .decl declName phase inv => some (.decl declName phase (not inv))
+  | _ => none
+
+instance : BEq Origin where
+  beq a b := match a, b with
+    | .decl declName₁ _ inv₁, .decl declName₂ _ inv₂ =>
+      /- Remark: we must distinguish `thm` from `←thm`. See issue #4290. -/
+      declName₁ == declName₂ && inv₁ == inv₂
+    | .decl .., _ => false
+    | _, .decl .. => false
+    | a, b => a.key == b.key
+
+instance : Hashable Origin where
+  hash a := match a with
+   | .decl declName _ true => mixHash (hash declName) 11
+   | .decl declName _ false => mixHash (hash declName) 13
+   | a => hash a.key
+
+def Origin.lt : Origin → Origin → Bool
+  | .decl declName₁ _ inv₁, .decl declName₂ _ inv₂ =>
+    Name.lt declName₁ declName₂ || (declName₁ == declName₂ && !inv₁ && inv₂)
+  | .decl .., _ => false
+  | _, .decl .. => true
+  | a, b => Name.lt a.key b.key
+
+instance : LT Origin where
+  lt a b := a.lt b
+
+instance (a b : Origin) : Decidable (a < b) :=
+  inferInstanceAs (Decidable (a.lt b))
 
 /-
-Note: we want to use iota reduction when indexing instaces. Otherwise,
+Note: we want to use iota reduction when indexing instances. Otherwise,
 we cannot use simp theorems such as
 ```
 @[simp] theorem liftOn_mk (a : α) (f : α → γ) (h : ∀ a₁ a₂, r a₁ a₂ → f a₁ = f a₂) :
@@ -61,7 +93,7 @@ If we use `iota`, then the lhs is reduced to `f a`.
 See comment at `DiscrTree`.
 -/
 
-abbrev SimpTheoremKey := DiscrTree.Key (simpleReduce := true)
+abbrev SimpTheoremKey := DiscrTree.Key
 
 /--
   The fields `levelParams` and `proof` are used to encode the proof of the simp theorem.
@@ -109,8 +141,9 @@ mutual
         else if proof.isAppOfArity ``Eq.symm 4 then
           -- `Eq.symm` of rfl theorem is a rfl theorem
           isRflProofCore type proof.appArg! -- small hack: we don't need to set the exact type
-        else if proof.isApp && proof.getAppFn.isConst then
+        else if proof.getAppFn.isConst then
           -- The application of a `rfl` theorem is a `rfl` theorem
+          -- A constant which is a `rfl` theorem is a `rfl` theorem
           isRflTheorem proof.getAppFn.constName!
         else
           return false
@@ -136,12 +169,18 @@ instance : ToFormat SimpTheorem where
     name ++ prio ++ perm
 
 def ppOrigin [Monad m] [MonadEnv m] [MonadError m] : Origin → m MessageData
-  | .decl n => mkConstWithLevelParams n
+  | .decl n post inv => do
+    let r := MessageData.ofConstName n
+    match post, inv with
+    | true,  true  => return m!"← {r}"
+    | true,  false => return r
+    | false, true  => return m!"↓ ← {r}"
+    | false, false => return m!"↓ {r}"
   | .fvar n => return mkFVar n
   | .stx _ ref => return ref
   | .other n => return n
 
-def ppSimpTheorem [Monad m] [MonadLiftT IO m] [MonadEnv m] [MonadError m] (s : SimpTheorem) : m MessageData := do
+def ppSimpTheorem [Monad m] [MonadEnv m] [MonadError m] (s : SimpTheorem) : m MessageData := do
   let perm := if s.perm then ":perm" else ""
   let name ← ppOrigin s.origin
   let prio := m!":{s.priority}"
@@ -150,18 +189,64 @@ def ppSimpTheorem [Monad m] [MonadLiftT IO m] [MonadEnv m] [MonadError m] (s : S
 instance : BEq SimpTheorem where
   beq e₁ e₂ := e₁.proof == e₂.proof
 
-abbrev SimpTheoremTree := DiscrTree SimpTheorem (simpleReduce := true)
+abbrev SimpTheoremTree := DiscrTree SimpTheorem
 
 structure SimpTheorems where
   pre          : SimpTheoremTree := DiscrTree.empty
   post         : SimpTheoremTree := DiscrTree.empty
   lemmaNames   : PHashSet Origin := {}
+  /--
+  Constants (and let-declaration `FVarId`) to unfold.
+  When `zetaDelta := false`, the simplifier will expand a let-declaration if it is in this set.
+  -/
   toUnfold     : PHashSet Name := {}
   erased       : PHashSet Origin := {}
   toUnfoldThms : PHashMap Name (Array Name) := {}
   deriving Inhabited
 
+/--
+Configuration for `MetaM` used to process global simp theorems
+-/
+def simpGlobalConfig : ConfigWithKey :=
+  { iota         := false
+    proj         := .no
+    zetaDelta    := false
+    transparency := .reducible
+  : Config }.toConfigWithKey
+
+@[inline] def withSimpGlobalConfig : MetaM α → MetaM α :=
+  withConfigWithKey simpGlobalConfig
+
+partial def SimpTheorems.eraseCore (d : SimpTheorems) (thmId : Origin) : SimpTheorems :=
+  let d := { d with erased := d.erased.insert thmId, lemmaNames := d.lemmaNames.erase thmId }
+  if let .decl declName .. := thmId then
+    let d := { d with toUnfold := d.toUnfold.erase declName }
+    if let some thms := d.toUnfoldThms.find? declName then
+      let dummy := true
+      thms.foldl (init := d) (eraseCore · <| .decl · dummy (inv := false))
+    else
+      d
+  else
+    d
+
+private def eraseIfExists (d : SimpTheorems) (thmId : Origin) : SimpTheorems :=
+  if d.lemmaNames.contains thmId then
+    d.eraseCore thmId
+  else
+    d
+
+/--
+If `e` is a backwards theorem `← thm`, we must ensure the forward theorem is erased
+from `d`. See issue #4290
+-/
+private def eraseFwdIfBwd (d : SimpTheorems) (e : SimpTheorem) : SimpTheorems :=
+  if let some converseOrigin := e.origin.converse then
+    eraseIfExists d converseOrigin
+  else
+    d
+
 def addSimpTheoremEntry (d : SimpTheorems) (e : SimpTheorem) : SimpTheorems :=
+  let d := eraseFwdIfBwd d e
   if e.post then
     { d with post := d.post.insertCore e.keys e, lemmaNames := updateLemmaNames d.lemmaNames }
   else
@@ -173,9 +258,16 @@ where
 def SimpTheorems.addDeclToUnfoldCore (d : SimpTheorems) (declName : Name) : SimpTheorems :=
   { d with toUnfold := d.toUnfold.insert declName }
 
+def SimpTheorems.addLetDeclToUnfold (d : SimpTheorems) (fvarId : FVarId) : SimpTheorems :=
+  -- A small hack that relies on the fact that constants and `FVarId` names should be disjoint.
+  { d with toUnfold := d.toUnfold.insert fvarId.name }
+
 /-- Return `true` if `declName` is tagged to be unfolded using `unfoldDefinition?` (i.e., without using equational theorems). -/
 def SimpTheorems.isDeclToUnfold (d : SimpTheorems) (declName : Name) : Bool :=
   d.toUnfold.contains declName
+
+def SimpTheorems.isLetDeclToUnfold (d : SimpTheorems) (fvarId : FVarId) : Bool :=
+  d.toUnfold.contains fvarId.name -- See comment at `addLetDeclToUnfold`
 
 def SimpTheorems.isLemma (d : SimpTheorems) (thmId : Origin) : Bool :=
   d.lemmaNames.contains thmId
@@ -184,40 +276,39 @@ def SimpTheorems.isLemma (d : SimpTheorems) (thmId : Origin) : Bool :=
 def SimpTheorems.registerDeclToUnfoldThms (d : SimpTheorems) (declName : Name) (eqThms : Array Name) : SimpTheorems :=
   { d with toUnfoldThms := d.toUnfoldThms.insert declName eqThms }
 
-partial def SimpTheorems.eraseCore (d : SimpTheorems) (thmId : Origin) : SimpTheorems :=
-  let d := { d with erased := d.erased.insert thmId, lemmaNames := d.lemmaNames.erase thmId }
-  if let .decl declName := thmId then
-    let d := { d with toUnfold := d.toUnfold.erase declName }
-    if let some thms := d.toUnfoldThms.find? declName then
-      thms.foldl (init := d) (eraseCore · <| .decl ·)
-    else
-      d
-  else
-    d
-
-def SimpTheorems.erase [Monad m] [MonadError m] (d : SimpTheorems) (thmId : Origin) : m SimpTheorems := do
-  unless d.isLemma thmId ||
+def SimpTheorems.erase [Monad m] [MonadLog m] [AddMessageContext m] [MonadOptions m]
+    (d : SimpTheorems) (thmId : Origin) : m SimpTheorems := do
+  if d.isLemma thmId ||
     match thmId with
-    | .decl declName => d.isDeclToUnfold declName || d.toUnfoldThms.contains declName
+    | .decl declName .. => d.isDeclToUnfold declName || d.toUnfoldThms.contains declName
     | _ => false
-  do
-    throwError "'{thmId.key}' does not have [simp] attribute"
-  return d.eraseCore thmId
+  then
+    return d.eraseCore thmId
+
+  -- `attribute [-simp] foo` should also undo `attribute [simp ←] foo`.
+  if let some thmId' := thmId.converse then
+    if d.isLemma thmId' then
+      return d.eraseCore thmId'
+
+  logWarning m!"'{thmId.key}' does not have [simp] attribute"
+  return d
 
 private partial def isPerm : Expr → Expr → MetaM Bool
-  | Expr.app f₁ a₁, Expr.app f₂ a₂ => isPerm f₁ f₂ <&&> isPerm a₁ a₂
-  | Expr.mdata _ s, t => isPerm s t
-  | s, Expr.mdata _ t => isPerm s t
-  | s@(Expr.mvar ..), t@(Expr.mvar ..) => isDefEq s t
-  | Expr.forallE n₁ d₁ b₁ _, Expr.forallE _ d₂ b₂ _ => isPerm d₁ d₂ <&&> withLocalDeclD n₁ d₁ fun x => isPerm (b₁.instantiate1 x) (b₂.instantiate1 x)
-  | Expr.lam n₁ d₁ b₁ _, Expr.lam _ d₂ b₂ _ => isPerm d₁ d₂ <&&> withLocalDeclD n₁ d₁ fun x => isPerm (b₁.instantiate1 x) (b₂.instantiate1 x)
-  | Expr.letE n₁ t₁ v₁ b₁ _, Expr.letE _  t₂ v₂ b₂ _ =>
+  | .app f₁ a₁, .app f₂ a₂ => isPerm f₁ f₂ <&&> isPerm a₁ a₂
+  | .mdata _ s, t => isPerm s t
+  | s, .mdata _ t => isPerm s t
+  | s@(.mvar ..), t@(.mvar ..) => isDefEq s t
+  | .forallE n₁ d₁ b₁ _, .forallE _ d₂ b₂ _ =>
+    isPerm d₁ d₂ <&&> withLocalDeclD n₁ d₁ fun x => isPerm (b₁.instantiate1 x) (b₂.instantiate1 x)
+  | .lam n₁ d₁ b₁ _, .lam _ d₂ b₂ _ =>
+    isPerm d₁ d₂ <&&> withLocalDeclD n₁ d₁ fun x => isPerm (b₁.instantiate1 x) (b₂.instantiate1 x)
+  | .letE n₁ t₁ v₁ b₁ _, .letE _  t₂ v₂ b₂ _ =>
     isPerm t₁ t₂ <&&> isPerm v₁ v₂ <&&> withLetDecl n₁ t₁ v₁ fun x => isPerm (b₁.instantiate1 x) (b₂.instantiate1 x)
-  | Expr.proj _ i₁ b₁, Expr.proj _ i₂ b₂ => pure (i₁ == i₂) <&&> isPerm b₁ b₂
+  | .proj _ i₁ b₁, .proj _ i₂ b₂ => pure (i₁ == i₂) <&&> isPerm b₁ b₂
   | s, t => return s == t
 
 private def checkBadRewrite (lhs rhs : Expr) : MetaM Unit := do
-  let lhs ← DiscrTree.reduceDT lhs (root := true) (simpleReduce := true)
+  let lhs ← withSimpGlobalConfig <| DiscrTree.reduceDT lhs (root := true)
   if lhs == rhs && lhs.isFVar then
     throwError "invalid `simp` theorem, equation is equivalent to{indentExpr (← mkEq lhs rhs)}"
 
@@ -296,32 +387,34 @@ private def checkTypeIsProp (type : Expr) : MetaM Unit :=
   unless (← isProp type) do
     throwError "invalid 'simp', proposition expected{indentExpr type}"
 
-private def mkSimpTheoremCore (origin : Origin) (e : Expr) (levelParams : Array Name) (proof : Expr) (post : Bool) (prio : Nat) : MetaM SimpTheorem := do
+private def mkSimpTheoremCore (origin : Origin) (e : Expr) (levelParams : Array Name) (proof : Expr) (post : Bool) (prio : Nat) (noIndexAtArgs : Bool) : MetaM SimpTheorem := do
   assert! origin != .fvar ⟨.anonymous⟩
   let type ← instantiateMVars (← inferType e)
   withNewMCtxDepth do
-    let (_, _, type) ← withReducible <| forallMetaTelescopeReducing type
+    let (_, _, type) ← forallMetaTelescopeReducing type
     let type ← whnfR type
     let (keys, perm) ←
       match type.eq? with
-      | some (_, lhs, rhs) => pure (← DiscrTree.mkPath lhs, ← isPerm lhs rhs)
+      | some (_, lhs, rhs) => pure (← DiscrTree.mkPath lhs noIndexAtArgs, ← isPerm lhs rhs)
       | none => throwError "unexpected kind of 'simp' theorem{indentExpr type}"
     return { origin, keys, perm, post, levelParams, proof, priority := prio, rfl := (← isRflProof proof) }
 
 private def mkSimpTheoremsFromConst (declName : Name) (post : Bool) (inv : Bool) (prio : Nat) : MetaM (Array SimpTheorem) := do
   let cinfo ← getConstInfo declName
-  let val := mkConst declName (cinfo.levelParams.map mkLevelParam)
-  withReducible do
+  let us := cinfo.levelParams.map mkLevelParam
+  let origin := .decl declName post inv
+  let val := mkConst declName us
+  withSimpGlobalConfig do
     let type ← inferType val
     checkTypeIsProp type
     if inv || (← shouldPreprocess type) then
       let mut r := #[]
       for (val, type) in (← preprocess val type inv (isGlobal := true)) do
         let auxName ← mkAuxLemma cinfo.levelParams type val
-        r := r.push <| (← mkSimpTheoremCore (.decl declName) (mkConst auxName (cinfo.levelParams.map mkLevelParam)) #[] (mkConst auxName) post prio)
+        r := r.push <| (← mkSimpTheoremCore origin (mkConst auxName us) #[] (mkConst auxName) post prio (noIndexAtArgs := false))
       return r
     else
-      return #[← mkSimpTheoremCore (.decl declName) (mkConst declName (cinfo.levelParams.map mkLevelParam)) #[] (mkConst declName) post prio]
+      return #[← mkSimpTheoremCore origin (mkConst declName us) #[] (mkConst declName) post prio (noIndexAtArgs := false)]
 
 inductive SimpEntry where
   | thm      : SimpTheorem → SimpEntry
@@ -339,71 +432,27 @@ def addSimpTheorem (ext : SimpExtension) (declName : Name) (post : Bool) (inv : 
   for simpThm in simpThms do
     ext.add (SimpEntry.thm simpThm) attrKind
 
-def mkSimpAttr (attrName : Name) (attrDescr : String) (ext : SimpExtension)
-    (ref : Name := by exact decl_name%) : IO Unit :=
-  registerBuiltinAttribute {
-    ref   := ref
-    name  := attrName
-    descr := attrDescr
-    applicationTime := AttributeApplicationTime.afterCompilation
-    add   := fun declName stx attrKind =>
-      let go : MetaM Unit := do
-        let info ← getConstInfo declName
-        let post := if stx[1].isNone then true else stx[1][0].getKind == ``Lean.Parser.Tactic.simpPost
-        let prio ← getAttrParamOptPrio stx[2]
-        if (← isProp info.type) then
-          addSimpTheorem ext declName post (inv := false) attrKind prio
-        else if info.hasValue then
-          if let some eqns ← getEqnsFor? declName then
-            for eqn in eqns do
-              addSimpTheorem ext eqn post (inv := false) attrKind prio
-            ext.add (SimpEntry.toUnfoldThms declName eqns) attrKind
-            if hasSmartUnfoldingDecl (← getEnv) declName then
-              ext.add (SimpEntry.toUnfold declName) attrKind
-          else
-            ext.add (SimpEntry.toUnfold declName) attrKind
-        else
-          throwError "invalid 'simp', it is not a proposition nor a definition (to unfold)"
-      discard <| go.run {} {}
-    erase := fun declName => do
-      let s := ext.getState (← getEnv)
-      let s ← s.erase (.decl declName)
-      modifyEnv fun env => ext.modifyState env fun _ => s
-  }
-
 def mkSimpExt (name : Name := by exact decl_name%) : IO SimpExtension :=
   registerSimpleScopedEnvExtension {
     name     := name
     initial  := {}
     addEntry := fun d e =>
       match e with
-      | SimpEntry.thm e => addSimpTheoremEntry d e
-      | SimpEntry.toUnfold n => d.addDeclToUnfoldCore n
-      | SimpEntry.toUnfoldThms n thms => d.registerDeclToUnfoldThms n thms
+      | .thm e => addSimpTheoremEntry d e
+      | .toUnfold n => d.addDeclToUnfoldCore n
+      | .toUnfoldThms n thms => d.registerDeclToUnfoldThms n thms
   }
 
-abbrev SimpExtensionMap := HashMap Name SimpExtension
+abbrev SimpExtensionMap := Std.HashMap Name SimpExtension
 
 builtin_initialize simpExtensionMapRef : IO.Ref SimpExtensionMap ← IO.mkRef {}
 
-def registerSimpAttr (attrName : Name) (attrDescr : String)
-    (ref : Name := by exact decl_name%) : IO SimpExtension := do
-  let ext ← mkSimpExt ref
-  mkSimpAttr attrName attrDescr ext ref -- Remark: it will fail if it is not performed during initialization
-  simpExtensionMapRef.modify fun map => map.insert attrName ext
-  return ext
-
-builtin_initialize simpExtension : SimpExtension ← registerSimpAttr `simp "simplification theorem"
-
 def getSimpExtension? (attrName : Name) : IO (Option SimpExtension) :=
-  return (← simpExtensionMapRef.get).find? attrName
-
-def getSimpTheorems : CoreM SimpTheorems :=
-  simpExtension.getTheorems
+  return (← simpExtensionMapRef.get)[attrName]?
 
 /-- Auxiliary method for adding a global declaration to a `SimpTheorems` datastructure. -/
 def SimpTheorems.addConst (s : SimpTheorems) (declName : Name) (post := true) (inv := false) (prio : Nat := eval_prio default) : MetaM SimpTheorems := do
-  let s := { s with erased := s.erased.erase (.decl declName) }
+  let s := { s with erased := s.erased.erase (.decl declName post inv) }
   let simpThms ← mkSimpTheoremsFromConst declName post inv prio
   return simpThms.foldl addSimpTheoremEntry s
 
@@ -413,7 +462,7 @@ def SimpTheorem.getValue (simpThm : SimpTheorem) : MetaM Expr := do
     if info.levelParams.isEmpty then
       return simpThm.proof
     else
-      return simpThm.proof.updateConst! (← info.levelParams.mapM (fun _ => mkFreshLevelMVar))
+      return simpThm.proof.updateConst! (← info.levelParams.mapM fun _ => mkFreshLevelMVar)
   else
     let us ← simpThm.levelParams.mapM fun _ => mkFreshLevelMVar
     return simpThm.proof.instantiateLevelParamsArray simpThm.levelParams us
@@ -425,37 +474,86 @@ private def preprocessProof (val : Expr) (inv : Bool) : MetaM (Array Expr) := do
   return ps.toArray.map fun (val, _) => val
 
 /-- Auxiliary method for creating simp theorems from a proof term `val`. -/
-def mkSimpTheorems (id : Origin) (levelParams : Array Name) (proof : Expr) (post := true) (inv := false) (prio : Nat := eval_prio default) : MetaM (Array SimpTheorem) :=
+private def mkSimpTheorems (id : Origin) (levelParams : Array Name) (proof : Expr) (post := true) (inv := false) (prio : Nat := eval_prio default) : MetaM (Array SimpTheorem) :=
   withReducible do
-    (← preprocessProof proof inv).mapM fun val => mkSimpTheoremCore id val levelParams val post prio
+    (← preprocessProof proof inv).mapM fun val => mkSimpTheoremCore id val levelParams val post prio (noIndexAtArgs := true)
 
-/-- Auxiliary method for adding a local simp theorem to a `SimpTheorems` datastructure. -/
-def SimpTheorems.add (s : SimpTheorems) (id : Origin) (levelParams : Array Name) (proof : Expr) (inv := false) (post := true) (prio : Nat := eval_prio default) : MetaM SimpTheorems := do
-  if proof.isConst then
-    s.addConst proof.constName! post inv prio
-  else
-    let simpThms ← mkSimpTheorems id levelParams proof post inv prio
-    return simpThms.foldl addSimpTheoremEntry s
+/--
+Reducible functions and projection functions should always be put in `toUnfold`, instead
+of trying to use equational theorems.
+
+The simplifiers has special support for structure and class projections, and gets
+confused when they suddenly rewrite, so ignore equations for them
+-/
+def SimpTheorems.ignoreEquations (declName : Name) : CoreM Bool := do
+  return (← isProjectionFn declName) || (← isReducible declName)
+
+/--
+Even if a function has equation theorems,
+we also store it in the `toUnfold` set in the following two cases:
+1- It was defined by structural recursion and has a smart-unfolding associated declaration.
+2- It is non-recursive.
+
+Reason: `unfoldPartialApp := true` or conditional equations may not apply.
+
+Remark: In the future, we are planning to disable this
+behavior unless `unfoldPartialApp := true`.
+Moreover, users will have to use `f.eq_def` if they want to force the definition to be
+unfolded.
+-/
+def SimpTheorems.unfoldEvenWithEqns (declName : Name) : CoreM Bool := do
+  if hasSmartUnfoldingDecl (← getEnv) declName then return true
+  unless (← isRecursiveDefinition declName) do return true
+  return false
 
 def SimpTheorems.addDeclToUnfold (d : SimpTheorems) (declName : Name) : MetaM SimpTheorems := do
-  if let some eqns ← getEqnsFor? declName then
+  if (← ignoreEquations declName) then
+    return d.addDeclToUnfoldCore declName
+  else if let some eqns ← getEqnsFor? declName then
     let mut d := d
-    for eqn in eqns do
-      d ← SimpTheorems.addConst d eqn
-    if hasSmartUnfoldingDecl (← getEnv) declName then
+    for h : i in [:eqns.size] do
+      let eqn := eqns[i]
+      /-
+      We assign priorities to the equational lemmas so that more specific ones
+      are tried first before a possible catch-all with possible side-conditions.
+
+      We assign very low priorities to match the simplifiers behavior when unfolding
+      a definition, which happens in `simpLoop`’ `visitPreContinue` after applying
+      rewrite rules.
+
+      Definitions with more than 100 equational theorems will use priority 1 for all
+      but the last (a heuristic, not perfect).
+      -/
+      let prio := if eqns.size > 100 then
+        if i + 1 = eqns.size then 0 else 1
+      else
+        100 - i
+      d ← SimpTheorems.addConst d eqn (prio := prio)
+    if (← unfoldEvenWithEqns declName) then
       d := d.addDeclToUnfoldCore declName
     return d
   else
     return d.addDeclToUnfoldCore declName
 
+/-- Auxiliary method for adding a local simp theorem to a `SimpTheorems` datastructure. -/
+def SimpTheorems.add (s : SimpTheorems) (id : Origin) (levelParams : Array Name) (proof : Expr)
+        (inv := false) (post := true) (prio : Nat := eval_prio default)
+        (config : ConfigWithKey := simpGlobalConfig) : MetaM SimpTheorems := do
+  if proof.isConst then
+    -- Recall that we use `simpGlobalConfig` for processing global declarations.
+    s.addConst proof.constName! post inv prio
+  else
+    let simpThms ← withConfigWithKey config <| mkSimpTheorems id levelParams proof post inv prio
+    return simpThms.foldl addSimpTheoremEntry s
+
 abbrev SimpTheoremsArray := Array SimpTheorems
 
-def SimpTheoremsArray.addTheorem (thmsArray : SimpTheoremsArray) (id : Origin) (h : Expr) : MetaM SimpTheoremsArray :=
+def SimpTheoremsArray.addTheorem (thmsArray : SimpTheoremsArray) (id : Origin) (h : Expr) (config : ConfigWithKey := simpGlobalConfig) : MetaM SimpTheoremsArray :=
   if thmsArray.isEmpty then
     let thms : SimpTheorems := {}
-    return #[ (← thms.add id #[] h) ]
+    return #[ (← thms.add id #[] h (config := config)) ]
   else
-    thmsArray.modifyM 0 fun thms => thms.add id #[] h
+    thmsArray.modifyM 0 fun thms => thms.add id #[] h (config := config)
 
 def SimpTheoremsArray.eraseTheorem (thmsArray : SimpTheoremsArray) (thmId : Origin) : SimpTheoremsArray :=
   thmsArray.map fun thms => thms.eraseCore thmId
@@ -466,14 +564,7 @@ def SimpTheoremsArray.isErased (thmsArray : SimpTheoremsArray) (thmId : Origin) 
 def SimpTheoremsArray.isDeclToUnfold (thmsArray : SimpTheoremsArray) (declName : Name) : Bool :=
   thmsArray.any fun thms => thms.isDeclToUnfold declName
 
-macro (name := _root_.Lean.Parser.Command.registerSimpAttr) doc:(docComment)?
-  "register_simp_attr" id:ident : command => do
-  let str := id.getId.toString
-  let idParser := mkIdentFrom id (`Parser.Attr ++ id.getId)
-  let descr := quote (removeLeadingSpaces (doc.map (·.getDocString) |>.getD s!"simp set for {id.getId.toString}"))
-  `($[$doc:docComment]? initialize ext : SimpExtension ← registerSimpAttr $(quote id.getId) $descr $(quote id.getId)
-    $[$doc:docComment]? syntax (name := $idParser:ident) $(quote str):str (Parser.Tactic.simpPre <|> Parser.Tactic.simpPost)? (prio)? : attr)
+def SimpTheoremsArray.isLetDeclToUnfold (thmsArray : SimpTheoremsArray) (fvarId : FVarId) : Bool :=
+  thmsArray.any fun thms => thms.isLetDeclToUnfold fvarId
 
-end Meta
-
-end Lean
+end Lean.Meta

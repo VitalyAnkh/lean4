@@ -3,6 +3,7 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Compiler.IR.Basic
 import Lean.Compiler.IR.FreeVars
 
@@ -12,7 +13,7 @@ partial def reshapeWithoutDead (bs : Array FnBody) (term : FnBody) : FnBody :=
   let rec reshape (bs : Array FnBody) (b : FnBody) (used : IndexSet) :=
     if bs.isEmpty then b
     else
-      let curr := bs.back
+      let curr := bs.back!
       let bs   := bs.pop
       let keep (_ : Unit) :=
         let used := curr.collectFreeIndices used

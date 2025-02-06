@@ -2,21 +2,23 @@
 
 ### Tier 1
 
-Platforms built & tested by our CI, available as nightly releases via elan (see below)
+Platforms built & tested by our CI, available as binary releases via elan (see below)
 
 * x86-64 Linux with glibc 2.27+
 * x86-64 macOS 10.15+
-* x86-64 Windows 10+
+* aarch64 (Apple Silicon) macOS 10.15+
+* x86-64 Windows 11 (any version), Windows 10 (version 1903 or higher), Windows Server 2022
 
 ### Tier 2
 
-Platforms cross-compiled but not tested by our CI, available as nightly releases
+Platforms cross-compiled but not tested by our CI, available as binary releases
 
 Releases may be silently broken due to the lack of automated testing.
 Issue reports and fixes are welcome.
 
 * aarch64 Linux with glibc 2.27+
-* aarch64 (Apple Silicon) macOS
+* x86 (32-bit) Linux
+* Emscripten Web Assembly
 
 <!--
 ### Tier 3
@@ -32,8 +34,8 @@ Release builds for all supported platforms are available at <https://github.com/
 Instead of downloading these and setting up the paths manually, however, it is recommended to use the Lean version manager [`elan`](https://github.com/leanprover/elan) instead:
 ```sh
 $ elan self update  # in case you haven't updated elan in a while
-# download & activate latest Lean 4 nightly release (https://github.com/leanprover/lean4-nightly/releases)
-$ elan default leanprover/lean4:nightly
+# download & activate latest Lean 4 stable release (https://github.com/leanprover/lean4/releases)
+$ elan default leanprover/lean4:stable
 ```
 
 ## `lake`
@@ -48,10 +50,10 @@ Foo.lean       # main file, import via `import Foo`
 Foo/
   A.lean       # further files, import via e.g. `import Foo.A`
   A/...        # further nesting
-build/         # `lake` build output directory
+.lake/         # `lake` build output directory
 ```
 
-After running `lake build` you will see a binary named `./build/bin/foo` and when you run it you should see the output:
+After running `lake build` you will see a binary named `./.lake/build/bin/foo` and when you run it you should see the output:
 ```
 Hello, world!
 ```

@@ -3,6 +3,7 @@ Copyright (c) 2021 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.ScopedEnvExtension
 import Lean.Util.Recognizers
 import Lean.Util.CollectMVars
@@ -13,7 +14,7 @@ namespace Lean.Meta
 /--
   Data for user-defined theorems marked with the `congr` attribute.
 
-  This type should be confused with `CongrTheorem` which reprents different kinds of automatically
+  This type should be confused with `CongrTheorem` which represents different kinds of automatically
   generated congruence theorems. The `simp` tactic also uses some of them.
 -/
 structure SimpCongrTheorem where
@@ -62,7 +63,7 @@ def mkSimpCongrTheorem (declName : Name) (prio : Nat) : MetaM SimpCongrTheorem :
       for lhsArg in lhsArgs do
         for mvarId in (lhsArg.collectMVars {}).result do
           foundMVars := foundMVars.insert mvarId
-      let mut i := 0
+      let mut i : Nat := 0
       let mut hypothesesPos := #[]
       for x in xs, bi in bis do
         if bi.isExplicit && !foundMVars.contains x.mvarId! then
@@ -70,7 +71,7 @@ def mkSimpCongrTheorem (declName : Name) (prio : Nat) : MetaM SimpCongrTheorem :
             match xType.eqOrIff? with
             | none => pure none -- skip
             | some (xLhs, xRhs) =>
-              let mut j := 0
+              let mut j : Nat := 0
               for y in ys do
                 let yType ← inferType y
                 unless onlyMVarsAt yType foundMVars do
@@ -117,7 +118,7 @@ builtin_initialize
       discard <| addSimpCongrTheorem declName attrKind prio |>.run {} {}
   }
 
-def getSimpCongrTheorems : MetaM SimpCongrTheorems :=
+def getSimpCongrTheorems : CoreM SimpCongrTheorems :=
   return congrExtension.getState (← getEnv)
 
 end Lean.Meta

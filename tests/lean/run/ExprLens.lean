@@ -79,6 +79,7 @@ def testTraversal
     if not (← liftM $ isDefEq e e') then
       throwError "\n{e} \nand \n{e'} are different!"
 
+#guard_msgs in
 #eval ((do
   testTraversal traverseLambdaWithPos 1
   testTraversal traverseChildrenWithPos 4

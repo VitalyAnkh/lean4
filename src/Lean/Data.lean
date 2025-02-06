@@ -3,6 +3,7 @@ Copyright (c) 2020 Sebastian Ullrich. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Sebastian Ullrich
 -/
+prelude
 import Lean.Data.AssocList
 import Lean.Data.Format
 import Lean.Data.HashMap
@@ -15,10 +16,8 @@ import Lean.Data.LOption
 import Lean.Data.Lsp
 import Lean.Data.Name
 import Lean.Data.NameMap
-import Lean.Data.Occurrences
 import Lean.Data.OpenDecl
 import Lean.Data.Options
-import Lean.Data.Parsec
 import Lean.Data.PersistentArray
 import Lean.Data.PersistentHashMap
 import Lean.Data.PersistentHashSet
@@ -30,4 +29,4 @@ import Lean.Data.Xml
 import Lean.Data.NameTrie
 import Lean.Data.RBTree
 import Lean.Data.RBMap
-import Lean.Data.Rat
+import Lean.Data.RArray

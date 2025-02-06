@@ -3,9 +3,11 @@ Copyright (c) 2022 Mac Malone. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Mac Malone
 -/
+prelude
 import Lake.Util.Name
 
 namespace Lake
+open Lean (Name)
 
 /-- The type of keys in the Lake build store. -/
 inductive BuildKey
@@ -22,6 +24,18 @@ def toString : (self : BuildKey) → String
 | packageFacet p f => s!"@{p}:{f}"
 | targetFacet p t f => s!"{p}/{t}:{f}"
 | customTarget p t => s!"{p}/{t}"
+
+/-- Like the default `toString`, but without disambiguation markers. -/
+def toSimpleString : (self : BuildKey) → String
+| moduleFacet m f => s!"{m}:{f}"
+| packageFacet p f => s!"{p}:{f}"
+| targetFacet p t f => s!"{p}/{t}:{eraseHead f}"
+| customTarget p t => s!"{p}/{t}"
+where
+  eraseHead : Name → Name
+    | .anonymous | .str .anonymous _  | .num .anonymous _  => .anonymous
+    | .str p s => .str (eraseHead p) s
+    | .num p s => .num (eraseHead p) s
 
 instance : ToString BuildKey := ⟨(·.toString)⟩
 

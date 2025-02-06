@@ -1,5 +1,2 @@
-rm -rf a/build
-rm -rf b/build
-rm -rf foo/build
-rm -rf bar/build
-rm -rf root/build
+rm -rf root/.lake a/.lake b/.lake foo/.lake bar/.lake
+rm -f foo/lake-manifest.json bar/lake-manifest.json

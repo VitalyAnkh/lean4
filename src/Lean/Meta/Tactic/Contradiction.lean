@@ -3,6 +3,7 @@ Copyright (c) 2021 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Meta.MatchUtil
 import Lean.Meta.Tactic.Assumption
 import Lean.Meta.Tactic.Cases
@@ -95,12 +96,12 @@ private abbrev isGenDiseq (e : Expr) : Bool :=
 
   See `processGenDiseq`
 -/
-private def mkGenDiseqMask (e : Expr) : Array Bool :=
+def mkGenDiseqMask (e : Expr) : Array Bool :=
   go e #[]
 where
   go (e : Expr) (acc : Array Bool) : Array Bool :=
     match e with
-    | Expr.forallE _ d b _ => go b (acc.push (!b.hasLooseBVar 0 && (d.isEq || d.isHEq)))
+    | .forallE _ d b _ => go b (acc.push (!b.hasLooseBVar 0 && (d.isEq || d.isHEq)))
     | _ => acc
 
 /--
@@ -159,7 +160,8 @@ def _root_.Lean.MVarId.contradictionCore (mvarId : MVarId) (config : Contradicti
         -- (h : ¬ p) (h' : p)
         if let some p ← matchNot? localDecl.type then
           if let some pFVarId ← findLocalDeclWithType? p then
-            mvarId.assign (← mkAbsurd (← mvarId.getType) (mkFVar pFVarId) localDecl.toExpr)
+            -- We use `False.elim` because `p`'s type may be Type
+            mvarId.assign (← mkFalseElim (← mvarId.getType) (mkApp localDecl.toExpr (mkFVar pFVarId)))
             return true
         -- (h : x ≠ x)
         if let some (_, lhs, rhs) ← matchNe? localDecl.type then
@@ -223,11 +225,7 @@ Throw exception if goal failed to be closed.
 -/
 def _root_.Lean.MVarId.contradiction (mvarId : MVarId) (config : Contradiction.Config := {}) : MetaM Unit :=
   unless (← mvarId.contradictionCore config) do
-    throwTacticEx `contradiction mvarId ""
-
-@[deprecated MVarId.contradiction]
-def contradiction (mvarId : MVarId) (config : Contradiction.Config := {}) : MetaM Unit :=
-  mvarId.contradiction config
+    throwTacticEx `contradiction mvarId
 
 builtin_initialize registerTraceClass `Meta.Tactic.contradiction
 

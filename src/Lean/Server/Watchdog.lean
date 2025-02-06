@@ -4,7 +4,9 @@ Released under Apache 2.0 license as described in the file LICENSE.
 
 Authors: Marc Huisinga, Wojciech Nawrocki
 -/
+prelude
 import Init.System.IO
+import Std.Sync.Mutex
 import Init.Data.ByteArray
 import Lean.Data.RBMap
 
@@ -22,42 +24,49 @@ For general server architecture, see `README.md`. This module implements the wat
 
 ## Watchdog state
 
-Most LSP clients only send us file diffs, so to facilitate sending entire file contents to freshly restarted
-workers, the watchdog needs to maintain the current state of each file. It can also use this state to detect changes
-to the header and thus restart the corresponding worker, freeing its imports.
+Most LSP clients only send us file diffs, so to facilitate sending entire file contents to freshly
+restarted workers, the watchdog needs to maintain the current state of each file. It can also use
+this state to detect changes to the header and thus restart the corresponding worker, freeing its
+imports.
 
 TODO(WN):
-We may eventually want to keep track of approximately (since this isn't knowable exactly) where in the file a worker
-crashed. Then on restart, we tell said worker to only parse up to that point and query the user about how to proceed
-(continue OR allow the user to fix the bug and then continue OR ..). Without this, if the crash is deterministic,
-users may be confused about why the server seemingly stopped working for a single file.
+We may eventually want to keep track of approximately (since this isn't knowable exactly) where in
+the file a worker crashed. Then on restart, we tell said worker to only parse up to that point and
+query the user about how to proceed (continue OR allow the user to fix the bug and then continue OR
+..). Without this, if the crash is deterministic, users may be confused about why the server
+seemingly stopped working for a single file.
 
 ## Watchdog <-> worker communication
 
-The watchdog process and its file worker processes communicate via LSP. If the necessity arises,
-we might add non-standard commands similarly based on JSON-RPC. Most requests and notifications
-are forwarded to the corresponding file worker process, with the exception of these notifications:
+The watchdog process and its file worker processes communicate via LSP. If the necessity arises, we
+might add non-standard commands similarly based on JSON-RPC. Most requests and notifications are
+forwarded to the corresponding file worker process, with the exception of these notifications:
 
-- textDocument/didOpen: Launch the file worker, create the associated watchdog state and launch a task to
-                        asynchronously receive LSP packets from the worker (e.g. request responses).
+- textDocument/didOpen: Launch the file worker, create the associated watchdog state and launch a
+                        task to asynchronously receive LSP packets from the worker (e.g. request
+                        responses).
 - textDocument/didChange: Update the local file state so that it can be resent to restarted workers.
                           Then forward the `didChange` notification.
-- textDocument/didClose: Signal a shutdown to the file worker and remove the associated watchdog state.
+- textDocument/didClose: Signal a shutdown to the file worker and remove the associated watchdog
+  state.
 
 Moreover, we don't implement the full protocol at this level:
 
-- Upon starting, the `initialize` request is forwarded to the worker, but it must not respond with its server
-  capabilities. Consequently, the watchdog will not send an `initialized` notification to the worker.
-- After `initialize`, the watchdog sends the corresponding `didOpen` notification with the full current state of
-  the file. No additional `didOpen` notifications will be forwarded to the worker process.
+- Upon starting, the `initialize` request is forwarded to the worker, but it must not respond with
+  its server capabilities. Consequently, the watchdog will not send an `initialized` notification to
+  the worker.
+- After `initialize`, the watchdog sends the corresponding `didOpen` notification with the full
+  current state of the file. No additional `didOpen` notifications will be forwarded to the worker
+  process.
 - `$/cancelRequest` notifications are forwarded to all file workers.
-- File workers are always terminated with an `exit` notification, without previously receiving a `shutdown` request.
-  Similarly, they never receive a `didClose` notification.
+- File workers are always terminated with an `exit` notification, without previously receiving a
+  `shutdown` request. Similarly, they never receive a `didClose` notification.
 
 ## Watchdog <-> client communication
 
-The watchdog itself should implement the LSP standard as closely as possible. However we reserve the right to add
-non-standard extensions in case they're needed, for example to communicate tactic state.
+The watchdog itself should implement the LSP standard as closely as possible. However we reserve the
+right to add non-standard extensions in case they're needed, for example to communicate tactic
+state.
 -/
 
 namespace Lean.Server.Watchdog
@@ -82,15 +91,19 @@ section Utils
     | crashed (e : IO.Error)
     | ioError (e : IO.Error)
 
+  inductive CrashOrigin
+    | fileWorkerToClientForwarding
+    | clientToFileWorkerForwarding
+
   inductive WorkerState where
-    /-- The watchdog can detect a crashed file worker in two places: When trying to send a message to the file worker
-    and when reading a request reply.
-    In the latter case, the forwarding task terminates and delegates a `crashed` event to the main task.
-    Then, in both cases, the file worker has its state set to `crashed` and requests that are in-flight are errored.
-    Upon receiving the next packet for that file worker, the file worker is restarted and the packet is forwarded
-    to it. If the crash was detected while writing a packet, we queue that packet until the next packet for the file
-    worker arrives. -/
-    | crashed (queuedMsgs : Array JsonRpc.Message)
+    /-- The watchdog can detect a crashed file worker in two places: When trying to send a message
+      to the file worker and when reading a request reply.
+      In the latter case, the forwarding task terminates and delegates a `crashed` event to the
+      main task. Then, in both cases, the file worker has its state set to `crashed` and requests
+      that are in-flight are errored. Upon receiving the next packet for that file worker, the file
+      worker is restarted and the packet is forwarded to it. If the crash was detected while writing
+      a packet, we queue that packet until the next packet for the file worker arrives. -/
+    | crashed (queuedMsgs : Array JsonRpc.Message) (origin : CrashOrigin)
     | running
 
   abbrev PendingRequestMap := RBMap RequestID JsonRpc.Message compare
@@ -100,13 +113,15 @@ section FileWorker
   structure FileWorker where
     doc                : DocumentMeta
     proc               : Process.Child workerCfg
+    exitCode           : Std.Mutex (Option UInt32)
     commTask           : Task WorkerEvent
     state              : WorkerState
-    -- This should not be mutated outside of namespace FileWorker, as it is used as shared mutable state
-    /-- The pending requests map contains all requests
-    that have been received from the LSP client, but were not answered yet.
-    We need them for forwaring cancellation requests to the correct worker as well as cleanly aborting
-    requests on worker crashes. -/
+    -- This should not be mutated outside of namespace FileWorker,
+    -- as it is used as shared mutable state
+    /-- The pending requests map contains all requests that have been received from the LSP client,
+    but were not answered yet.
+    We need them for forwarding cancellation requests to the correct worker as well as cleanly
+    aborting requests on worker crashes. -/
     pendingRequestsRef : IO.Ref PendingRequestMap
 
   namespace FileWorker
@@ -120,29 +135,134 @@ section FileWorker
   def erasePendingRequest (fw : FileWorker) (id : RequestID) : IO Unit :=
     fw.pendingRequestsRef.modify fun pendingRequests => pendingRequests.erase id
 
-  def errorPendingRequests (fw : FileWorker) (hError : FS.Stream) (code : ErrorCode) (msg : String) : IO Unit := do
-    let pendingRequests ← fw.pendingRequestsRef.modifyGet (fun pendingRequests => (pendingRequests, RBMap.empty))
+  def errorPendingRequests (fw : FileWorker) (hError : FS.Stream) (code : ErrorCode) (msg : String)
+      : IO Unit := do
+    let pendingRequests ← fw.pendingRequestsRef.modifyGet
+      fun pendingRequests => (pendingRequests, RBMap.empty)
     for ⟨id, _⟩ in pendingRequests do
       hError.writeLspResponseError { id := id, code := code, message := msg }
+
+  def queuedMsgs (fw : FileWorker) : Array JsonRpc.Message :=
+    match fw.state with
+    | .running => #[]
+    | .crashed queuedMsgs _ => queuedMsgs
+
+  def waitForProc (fw : FileWorker) : IO UInt32 :=
+    fw.exitCode.atomically do
+      match ← get with
+      | none =>
+        let exitCode ← fw.proc.wait
+        set <| some exitCode
+        return exitCode
+      | some exitCode =>
+        return exitCode
+
+  def killProcAndWait (fw : FileWorker) : IO UInt32 :=
+    fw.exitCode.atomically do
+      match ← get with
+      | none =>
+        fw.proc.kill
+        let exitCode ← fw.proc.wait
+        set <| some exitCode
+        return exitCode
+      | some exitCode =>
+        -- Process is already dead
+        return exitCode
+
 
   end FileWorker
 end FileWorker
 
 section ServerM
   abbrev FileWorkerMap := RBMap DocumentUri FileWorker compare
+  abbrev ImportMap := RBMap DocumentUri (RBTree DocumentUri compare) compare
+
+  /-- Global import data for all open files managed by this watchdog. -/
+  structure ImportData where
+    /-- For every open file, the files that it imports. -/
+    imports    : ImportMap
+    /-- For every open file, the files that it is imported by. -/
+    importedBy : ImportMap
+
+  /-- Updates `d` with the new set of `imports` for the file `uri`. -/
+  def ImportData.update (d : ImportData) (uri : DocumentUri) (imports : RBTree DocumentUri compare)
+      : ImportData := Id.run do
+    let oldImports     := d.imports.findD uri ∅
+    let removedImports := oldImports.diff imports
+    let addedImports   := imports.diff oldImports
+    let mut importedBy := d.importedBy
+
+    for removedImport in removedImports do
+      let importedByRemovedImport' := importedBy.find! removedImport |>.erase uri
+      if importedByRemovedImport'.isEmpty then
+        importedBy := importedBy.erase removedImport
+      else
+        importedBy := importedBy.insert removedImport importedByRemovedImport'
+
+    for addedImport in addedImports do
+      importedBy :=
+        importedBy.findD addedImport ∅
+          |>.insert uri
+          |> importedBy.insert addedImport
+
+    let imports :=
+      if imports.isEmpty then
+        d.imports.erase uri
+      else
+        d.imports.insert uri imports
+
+    return { imports, importedBy }
+
+  /--
+  Sets the imports of `uri` in `d` to the empty set.
+  -/
+  def ImportData.eraseImportsOf (d : ImportData) (uri : DocumentUri) : ImportData :=
+    d.update uri ∅
+
+  structure RequestIDTranslation where
+    sourceUri : DocumentUri
+    localID   : RequestID
+
+  abbrev PendingServerRequestMap := RBMap RequestID RequestIDTranslation compare
+
+  structure ServerRequestData where
+    pendingServerRequests : PendingServerRequestMap
+    freshServerRequestID  : Nat
+
+  def ServerRequestData.trackOutboundRequest
+      (data      : ServerRequestData)
+      (sourceUri : DocumentUri)
+      (localID   : RequestID)
+      : RequestID × ServerRequestData :=
+    let globalID := data.freshServerRequestID
+    let data := {
+      pendingServerRequests := data.pendingServerRequests.insert globalID ⟨sourceUri, localID⟩
+      freshServerRequestID  := globalID + 1
+    }
+    (globalID, data)
+
+  def ServerRequestData.translateInboundResponse
+      (data     : ServerRequestData)
+      (globalID : RequestID)
+      : Option RequestIDTranslation × ServerRequestData :=
+    let translation? := data.pendingServerRequests.find? globalID
+    let data := { data with pendingServerRequests := data.pendingServerRequests.erase globalID }
+    (translation?, data)
 
   structure ServerContext where
-    hIn            : FS.Stream
-    hOut           : FS.Stream
-    hLog           : FS.Stream
+    hIn                 : FS.Stream
+    hOut                : FS.Stream
+    hLog                : FS.Stream
     /-- Command line arguments. -/
-    args           : List String
-    fileWorkersRef : IO.Ref FileWorkerMap
+    args                : List String
+    fileWorkersRef      : IO.Ref FileWorkerMap
     /-- We store these to pass them to workers. -/
-    initParams     : InitializeParams
-    workerPath     : System.FilePath
-    srcSearchPath  : System.SearchPath
-    references     : IO.Ref References
+    initParams          : InitializeParams
+    workerPath          : System.FilePath
+    srcSearchPath       : System.SearchPath
+    references          : IO.Ref References
+    serverRequestData   : IO.Ref ServerRequestData
+    importData          : IO.Ref ImportData
 
   abbrev ServerM := ReaderT ServerContext IO
 
@@ -152,17 +272,13 @@ section ServerM
   def findFileWorker? (uri : DocumentUri) : ServerM (Option FileWorker) :=
     return (← (←read).fileWorkersRef.get).find? uri
 
-  def findFileWorker! (uri : DocumentUri) : ServerM FileWorker := do
-    let some fw ← findFileWorker? uri
-      | throwServerError s!"cannot find open document '{uri}'"
-    return fw
-
   def eraseFileWorker (uri : DocumentUri) : ServerM Unit := do
     let s ← read
+    s.importData.modify (·.eraseImportsOf uri)
     s.fileWorkersRef.modify (fun fileWorkers => fileWorkers.erase uri)
-    if let some path := fileUriToPath? uri then
-      if let some module ← searchModuleNameOfFileName path s.srcSearchPath then
-        s.references.modify fun refs => refs.removeWorkerRefs module
+    let some module ← s.srcSearchPath.searchModuleNameOfUri uri
+      | return
+    s.references.modify fun refs => refs.removeWorkerRefs module
 
   def log (msg : String) : ServerM Unit := do
     let st ← read
@@ -171,74 +287,103 @@ section ServerM
 
   def handleIleanInfoUpdate (fw : FileWorker) (params : LeanIleanInfoParams) : ServerM Unit := do
     let s ← read
-    if let some path := fileUriToPath? fw.doc.uri then
-      if let some module ← searchModuleNameOfFileName path s.srcSearchPath then
-        s.references.modify fun refs => refs.updateWorkerRefs module params.version params.references
+    let some module ← s.srcSearchPath.searchModuleNameOfUri fw.doc.uri
+      | return
+    s.references.modify fun refs =>
+      refs.updateWorkerRefs module params.version params.references
 
   def handleIleanInfoFinal (fw : FileWorker) (params : LeanIleanInfoParams) : ServerM Unit := do
     let s ← read
-    if let some path := fileUriToPath? fw.doc.uri then
-      if let some module ← searchModuleNameOfFileName path s.srcSearchPath then
-        s.references.modify fun refs => refs.finalizeWorkerRefs module params.version params.references
+    let some module ← s.srcSearchPath.searchModuleNameOfUri fw.doc.uri
+      | return
+    s.references.modify fun refs =>
+      refs.finalizeWorkerRefs module params.version params.references
+
+  /--
+  Updates the global import data with the import closure provided by the file worker after it
+  successfully processed its header.
+  -/
+  def handleImportClosure (fw : FileWorker) (params : LeanImportClosureParams) : ServerM Unit := do
+    let s ← read
+    s.importData.modify fun importData =>
+      importData.update fw.doc.uri (.ofList params.importClosure.toList)
 
   /-- Creates a Task which forwards a worker's messages into the output stream until an event
   which must be handled in the main watchdog thread (e.g. an I/O error) happens. -/
   private partial def forwardMessages (fw : FileWorker) : ServerM (Task WorkerEvent) := do
-    let o := (←read).hOut
-    let rec loop : ServerM WorkerEvent := do
-      try
-        let msg ← fw.stdout.readLspMessage
-        -- Re. `o.writeLspMessage msg`:
-        -- Writes to Lean I/O channels are atomic, so these won't trample on each other.
-        match msg with
-          | Message.response id _ => do
-            fw.erasePendingRequest id
-            o.writeLspMessage msg
-          | Message.responseError id _ _ _ => do
-            fw.erasePendingRequest id
-            o.writeLspMessage msg
-          | Message.notification "$/lean/ileanInfoUpdate" params =>
-            if let some params := params then
-              if let Except.ok params := FromJson.fromJson? <| ToJson.toJson params then
-                handleIleanInfoUpdate fw params
-          | Message.notification "$/lean/ileanInfoFinal" params =>
-            if let some params := params then
-              if let Except.ok params := FromJson.fromJson? <| ToJson.toJson params then
-                handleIleanInfoFinal fw params
-          | _ => o.writeLspMessage msg
-      catch err =>
-        -- If writeLspMessage from above errors we will block here, but the main task will
-        -- quit eventually anyways if that happens
-        let exitCode ← fw.proc.wait
-        -- Remove surviving descendant processes, if any, such as from nested builds.
-        -- On Windows, we instead rely on elan doing this.
-        try fw.proc.kill catch _ => pure ()
-        match exitCode with
-        | 0 =>
-          -- Worker was terminated
-          fw.errorPendingRequests o ErrorCode.contentModified
-            (s!"The file worker for {fw.doc.uri} has been terminated. Either the header has changed,"
-            ++ " or the file was closed, or the server is shutting down.")
-          -- one last message to clear the diagnostics for this file so that stale errors
-          -- do not remain in the editor forever.
-          publishDiagnostics fw.doc #[] o
-          return WorkerEvent.terminated
-        | 2 =>
-          return .importsChanged
-        | _ =>
-          -- Worker crashed
-          fw.errorPendingRequests o (if exitCode = 1 then ErrorCode.workerExited else ErrorCode.workerCrashed)
-            s!"Server process for {fw.doc.uri} crashed, {if exitCode = 1 then "see stderr for exception" else "likely due to a stack overflow or a bug"}."
-          publishProgressAtPos fw.doc 0 o (kind := LeanFileProgressKind.fatalError)
-          return WorkerEvent.crashed err
-      loop
     let task ← IO.asTask (loop $ ←read) Task.Priority.dedicated
     return task.map fun
       | Except.ok ev   => ev
       | Except.error e => WorkerEvent.ioError e
+  where
+    loop : ServerM WorkerEvent := do
+      let o := (←read).hOut
+      let msg ←
+        try
+          fw.stdout.readLspMessage
+        catch err =>
+          let exitCode ← fw.waitForProc
+          -- Remove surviving descendant processes, if any, such as from nested builds.
+          -- On Windows, we instead rely on elan doing this.
+          try fw.proc.kill catch _ => pure ()
+          -- TODO: Wait for process group to finish
+          match exitCode with
+          | 0 =>
+            -- Worker was terminated
+            fw.errorPendingRequests o ErrorCode.contentModified
+              (s!"The file worker for {fw.doc.uri} has been terminated. "
+              ++ "Either the header has changed, or the file was closed, "
+              ++ " or the server is shutting down.")
+            -- one last message to clear the diagnostics for this file so that stale errors
+            -- do not remain in the editor forever.
+            o.writeLspMessage <| mkPublishDiagnosticsNotification fw.doc #[]
+            return WorkerEvent.terminated
+          | 2 =>
+            return .importsChanged
+          | _ =>
+            -- Worker crashed
+            let (errorCode, errorCausePointer) :=
+              if exitCode = 1 then
+                (ErrorCode.workerExited, "see stderr for exception")
+              else
+                (ErrorCode.workerCrashed, "likely due to a stack overflow or a bug")
+            fw.errorPendingRequests o errorCode
+              s!"Server process for {fw.doc.uri} crashed, {errorCausePointer}."
+            o.writeLspMessage <| mkFileProgressAtPosNotification fw.doc 0 (kind := LeanFileProgressKind.fatalError)
+            return WorkerEvent.crashed err
+
+      -- Re. `o.writeLspMessage msg`:
+      -- Writes to Lean I/O channels are atomic, so these won't trample on each other.
+      match msg with
+      | Message.response id _ => do
+        fw.erasePendingRequest id
+        o.writeLspMessage msg
+      | Message.responseError id _ _ _ => do
+        fw.erasePendingRequest id
+        o.writeLspMessage msg
+      | Message.request id method params? =>
+        let globalID ← (←read).serverRequestData.modifyGet
+          (·.trackOutboundRequest fw.doc.uri id)
+        o.writeLspMessage (Message.request globalID method params?)
+      | Message.notification "$/lean/ileanInfoUpdate" params =>
+        if let some params := params then
+          if let Except.ok params := FromJson.fromJson? <| ToJson.toJson params then
+            handleIleanInfoUpdate fw params
+      | Message.notification "$/lean/ileanInfoFinal" params =>
+        if let some params := params then
+          if let Except.ok params := FromJson.fromJson? <| ToJson.toJson params then
+            handleIleanInfoFinal fw params
+      | Message.notification "$/lean/importClosure" params =>
+        if let some params := params then
+          if let Except.ok params := FromJson.fromJson? <| ToJson.toJson params then
+            handleImportClosure fw params
+      | _ =>
+        o.writeLspMessage msg
+
+      loop
 
   def startFileWorker (m : DocumentMeta) : ServerM Unit := do
-    publishProgressAtPos m 0 (← read).hOut
+    (← read).hOut.writeLspMessage <| mkFileProgressAtPosNotification m 0
     let st ← read
     let workerProc ← Process.spawn {
       toStdioConfig := workerCfg
@@ -247,11 +392,21 @@ section ServerM
       -- open session for `kill` above
       setsid        := true
     }
+    let exitCode ← Std.Mutex.new none
     let pendingRequestsRef ← IO.mkRef (RBMap.empty : PendingRequestMap)
+    let initialDependencyBuildMode := m.dependencyBuildMode
+    let updatedDependencyBuildMode :=
+      if initialDependencyBuildMode matches .once then
+        -- By sending the first `didOpen` notification, we build the dependencies once
+        -- => no future builds
+        .never
+      else
+        initialDependencyBuildMode
     -- The task will never access itself, so this is fine
     let fw : FileWorker := {
-      doc                := m
+      doc                := { m with dependencyBuildMode := updatedDependencyBuildMode}
       proc               := workerProc
+      exitCode
       commTask           := Task.pure WorkerEvent.terminated
       state              := WorkerState.running
       pendingRequestsRef := pendingRequestsRef
@@ -267,13 +422,16 @@ section ServerM
           languageId := "lean"
           version    := m.version
           text       := m.text.source
-        } : DidOpenTextDocumentParams
+        }
+        dependencyBuildMode? := initialDependencyBuildMode
+        : LeanDidOpenTextDocumentParams
       }
     }
     updateFileWorkers fw
 
   def terminateFileWorker (uri : DocumentUri) : ServerM Unit := do
-    let fw ← findFileWorker! uri
+    let some fw ← findFileWorker? uri
+      | return
     try
       fw.stdin.writeLspMessage (Message.notification "exit" none)
     catch _ =>
@@ -286,22 +444,39 @@ section ServerM
       return
     eraseFileWorker uri
 
-  def handleCrash (uri : DocumentUri) (queuedMsgs : Array JsonRpc.Message) : ServerM Unit := do
-    updateFileWorkers { ←findFileWorker! uri with state := WorkerState.crashed queuedMsgs }
+  def handleCrash (uri : DocumentUri) (queuedMsgs : Array JsonRpc.Message) (origin: CrashOrigin) : ServerM Unit := do
+    let some fw ← findFileWorker? uri
+      | return
+    updateFileWorkers { fw with state := WorkerState.crashed queuedMsgs origin }
+
+  def tryDischargeQueuedMessages (uri : DocumentUri) (queuedMsgs : Array JsonRpc.Message) : ServerM Unit := do
+      let some fw ← findFileWorker? uri
+        | throwServerError "Cannot find file worker for '{uri}'."
+      let mut crashedMsgs := #[]
+      -- Try to discharge all queued msgs, tracking the ones that we can't discharge
+      for msg in queuedMsgs do
+        try
+          fw.stdin.writeLspMessage msg
+        catch _ =>
+          crashedMsgs := crashedMsgs.push msg
+      if ¬ crashedMsgs.isEmpty then
+        handleCrash uri crashedMsgs .clientToFileWorkerForwarding
 
   /-- Tries to write a message, sets the state of the FileWorker to `crashed` if it does not succeed
-      and restarts the file worker if the `crashed` flag was already set. Just logs an error if there
-      is no FileWorker at this `uri`.
+      and restarts the file worker if the `crashed` flag was already set. Just logs an error if
+      there is no FileWorker at this `uri`.
       Messages that couldn't be sent can be queued up via the queueFailedMessage flag and
       will be discharged after the FileWorker is restarted. -/
-  def tryWriteMessage (uri : DocumentUri) (msg : JsonRpc.Message) (queueFailedMessage := true) (restartCrashedWorker := false) :
-      ServerM Unit := do
+  def tryWriteMessage
+      (uri : DocumentUri)
+      (msg : JsonRpc.Message)
+      (queueFailedMessage := true)
+      (restartCrashedWorker := false)
+      : ServerM Unit := do
     let some fw ← findFileWorker? uri
-      | do
-        (←read).hLog.putStrLn s!"Cannot send message to unknown document '{uri}':\n{(toJson msg).compress}"
-        return
+      | return
     match fw.state with
-    | WorkerState.crashed queuedMsgs =>
+    | WorkerState.crashed queuedMsgs _ =>
       let mut queuedMsgs := queuedMsgs
       if queueFailedMessage then
         queuedMsgs := queuedMsgs.push msg
@@ -310,16 +485,7 @@ section ServerM
       -- restart the crashed FileWorker
       eraseFileWorker uri
       startFileWorker fw.doc
-      let newFw ← findFileWorker! uri
-      let mut crashedMsgs := #[]
-      -- try to discharge all queued msgs, tracking the ones that we can't discharge
-      for msg in queuedMsgs do
-        try
-          newFw.stdin.writeLspMessage msg
-        catch _ =>
-          crashedMsgs := crashedMsgs.push msg
-      if ¬ crashedMsgs.isEmpty then
-        handleCrash uri crashedMsgs
+      tryDischargeQueuedMessages uri queuedMsgs
     | WorkerState.running =>
       let initialQueuedMsgs :=
         if queueFailedMessage then
@@ -329,7 +495,19 @@ section ServerM
       try
         fw.stdin.writeLspMessage msg
       catch _ =>
-        handleCrash uri initialQueuedMsgs
+        handleCrash uri initialQueuedMsgs .clientToFileWorkerForwarding
+
+  /--
+  Sends a notification to the file worker identified by `uri` that its dependency `staleDependency`
+  is out-of-date.
+  -/
+  def notifyAboutStaleDependency (uri : DocumentUri) (staleDependency : DocumentUri)
+      : ServerM Unit :=
+    let notification := Notification.mk "$/lean/staleDependency" {
+      staleDependency := staleDependency
+      : LeanStaleDependencyParams
+    }
+    tryWriteMessage uri notification (queueFailedMessage := false)
 end ServerM
 
 section RequestHandling
@@ -337,26 +515,210 @@ section RequestHandling
 open FuzzyMatching
 
 def findDefinitions (p : TextDocumentPositionParams) : ServerM <| Array Location := do
+  let srcSearchPath := (← read).srcSearchPath
+  let some module ← srcSearchPath.searchModuleNameOfUri p.textDocument.uri
+    | return #[]
+  let references ← (← read).references.get
   let mut definitions := #[]
-  if let some path := fileUriToPath? p.textDocument.uri then
-    let srcSearchPath := (← read).srcSearchPath
-    if let some module ← searchModuleNameOfFileName path srcSearchPath then
-      let references ← (← read).references.get
-      for ident in references.findAt module p.position do
-        if let some definition ← references.definitionOf? ident srcSearchPath then
-          definitions := definitions.push definition
+  for ident in references.findAt module p.position (includeStop := true) do
+    if let some ⟨definitionLocation, _⟩ ← references.definitionOf? ident srcSearchPath then
+      definitions := definitions.push definitionLocation
   return definitions
 
 def handleReference (p : ReferenceParams) : ServerM (Array Location) := do
+  let srcSearchPath := (← read).srcSearchPath
+  let some module ← srcSearchPath.searchModuleNameOfUri p.textDocument.uri
+    | return #[]
+  let references ← (← read).references.get
   let mut result := #[]
-  if let some path := fileUriToPath? p.textDocument.uri then
-    let srcSearchPath := (← read).srcSearchPath
-    if let some module ← searchModuleNameOfFileName path srcSearchPath then
-      let references ← (← read).references.get
-      for ident in references.findAt module p.position do
-        let identRefs ← references.referringTo module ident srcSearchPath p.context.includeDeclaration
-        result := result.append identRefs
+  for ident in references.findAt module p.position (includeStop := true) do
+    let identRefs ← references.referringTo srcSearchPath ident
+      p.context.includeDeclaration
+    result := result.append <| identRefs.map (·.location)
   return result
+
+/--
+Used in `CallHierarchyItem.data?` to retain all the data needed to quickly re-identify the
+call hierarchy item.
+-/
+structure CallHierarchyItemData where
+  module : Name
+  name   : Name
+  deriving FromJson, ToJson
+
+/--
+Extracts the CallHierarchyItemData from `item.data?` and returns `none` if this is not possible.
+-/
+def CallHierarchyItemData.fromItem? (item : CallHierarchyItem) : Option CallHierarchyItemData := do
+  fromJson? (← item.data?) |>.toOption
+
+private def callHierarchyItemOf?
+    (refs          : References)
+    (ident         : RefIdent)
+    (srcSearchPath : SearchPath)
+    : IO (Option CallHierarchyItem) := do
+  let some ⟨definitionLocation, parentDecl?⟩ ← refs.definitionOf? ident srcSearchPath
+    | return none
+
+  match ident with
+  | .const definitionModule definitionNameString =>
+    let definitionName := definitionNameString.toName
+    -- If we have a constant with a proper name, use it.
+    -- If `callHierarchyItemOf?` is used either on the name of a definition itself or e.g. an
+    -- `inductive` constructor, this is the right thing to do and using the parent decl is
+    -- the wrong thing to do.
+
+    -- Remove private header from name
+    let label := Lean.privateToUserName? definitionName |>.getD definitionName
+    return some {
+      name           := label.toString
+      kind           := SymbolKind.constant
+      uri            := definitionLocation.uri
+      range          := definitionLocation.range,
+      selectionRange := definitionLocation.range
+      data?          := toJson {
+        module := definitionModule.toName
+        name   := definitionName
+        : CallHierarchyItemData
+      }
+    }
+  | _ =>
+    let some ⟨parentDeclNameString, parentDeclRange, parentDeclSelectionRange⟩ := parentDecl?
+      | return none
+    let parentDeclName := parentDeclNameString.toName
+
+    let some definitionModule ← srcSearchPath.searchModuleNameOfUri definitionLocation.uri
+      | return none
+
+    -- Remove private header from name
+    let label := Lean.privateToUserName? parentDeclName |>.getD parentDeclName
+
+    return some {
+      name           := label.toString
+      kind           := SymbolKind.constant
+      uri            := definitionLocation.uri
+      range          := parentDeclRange,
+      selectionRange := parentDeclSelectionRange
+      data?          := toJson {
+        -- Assumption: The parent declaration of a reference lives in the same module
+        -- as the reference.
+        module := definitionModule
+        name   := parentDeclName
+        : CallHierarchyItemData
+      }
+    }
+
+def handlePrepareCallHierarchy (p : CallHierarchyPrepareParams)
+    : ServerM (Array CallHierarchyItem) := do
+  let srcSearchPath := (← read).srcSearchPath
+  let some module ← srcSearchPath.searchModuleNameOfUri p.textDocument.uri
+    | return #[]
+
+  let references ← (← read).references.get
+  let idents := references.findAt module p.position (includeStop := true)
+
+  let items ← idents.filterMapM fun ident =>
+    callHierarchyItemOf? references ident srcSearchPath
+  return items.qsort (·.name < ·.name)
+
+def handleCallHierarchyIncomingCalls (p : CallHierarchyIncomingCallsParams)
+    : ServerM (Array CallHierarchyIncomingCall) := do
+  let some itemData := CallHierarchyItemData.fromItem? p.item
+    | return #[]
+
+  let srcSearchPath := (← read).srcSearchPath
+
+  let references ← (← read).references.get
+  let identRefs ← references.referringTo srcSearchPath (.const itemData.module.toString itemData.name.toString) false
+
+  let incomingCalls ← identRefs.filterMapM fun ⟨location, parentDecl?⟩ => do
+
+    let some ⟨parentDeclNameString, parentDeclRange, parentDeclSelectionRange⟩ := parentDecl?
+      | return none
+
+    let parentDeclName := parentDeclNameString.toName
+
+    let some refModule ← srcSearchPath.searchModuleNameOfUri location.uri
+      | return none
+
+    -- Remove private header from name
+    let label := Lean.privateToUserName? parentDeclName |>.getD parentDeclName
+
+    return some {
+      «from» := {
+        name           := label.toString
+        kind           := SymbolKind.constant
+        uri            := location.uri
+        range          := parentDeclRange
+        selectionRange := parentDeclSelectionRange
+        data?          := toJson {
+          module := refModule
+          name   := parentDeclName
+          : CallHierarchyItemData
+        }
+      }
+      fromRanges := #[location.range]
+    }
+
+  return collapseSameIncomingCalls incomingCalls |>.qsort (·.«from».name < ·.«from».name)
+
+where
+
+  collapseSameIncomingCalls (incomingCalls : Array CallHierarchyIncomingCall)
+      : Array CallHierarchyIncomingCall :=
+    let grouped := incomingCalls.groupByKey (·.«from»)
+    let collapsed := grouped.toArray.map fun ⟨_, group⟩ => {
+      «from» := group[0]!.«from»
+      fromRanges := group.flatMap (·.fromRanges)
+    }
+    collapsed
+
+def handleCallHierarchyOutgoingCalls (p : CallHierarchyOutgoingCallsParams)
+    : ServerM (Array CallHierarchyOutgoingCall) := do
+  let some itemData := CallHierarchyItemData.fromItem? p.item
+    | return #[]
+
+  let srcSearchPath := (← read).srcSearchPath
+
+  let some module ← srcSearchPath.searchModuleNameOfUri p.item.uri
+    | return #[]
+
+  let references ← (← read).references.get
+
+  let some refs := references.allRefs[module]?
+    | return #[]
+
+  let items ← refs.toArray.filterMapM fun ⟨ident, info⟩ => do
+    let outgoingUsages := info.usages.filter fun usage => Id.run do
+      let some parentDecl := usage.parentDecl?
+        | return false
+      return itemData.name == parentDecl.name.toName
+
+    let outgoingUsages := outgoingUsages.map (·.range)
+    if outgoingUsages.isEmpty then
+      return none
+
+    let some item ← callHierarchyItemOf? references ident srcSearchPath
+      | return none
+
+    -- filter local defs from outgoing calls
+    if item.name == p.item.name then
+      return none
+
+    return some ⟨item, outgoingUsages⟩
+
+  return collapseSameOutgoingCalls items |>.qsort (·.to.name < ·.to.name)
+
+where
+
+  collapseSameOutgoingCalls (outgoingCalls : Array CallHierarchyOutgoingCall)
+      : Array CallHierarchyOutgoingCall :=
+    let grouped := outgoingCalls.groupByKey (·.to)
+    let collapsed := grouped.toArray.map fun ⟨_, group⟩ => {
+      to := group[0]!.to
+      fromRanges := group.flatMap (·.fromRanges)
+    }
+    collapsed
 
 def handleWorkspaceSymbol (p : WorkspaceSymbolParams) : ServerM (Array SymbolInformation) := do
   if p.query.isEmpty then
@@ -376,46 +738,101 @@ def handleWorkspaceSymbol (p : WorkspaceSymbolParams) : ServerM (Array SymbolInf
     |>.map fun ((name, _), location) =>
       { name, kind := SymbolKind.constant, location }
 
+def handlePrepareRename (p : PrepareRenameParams) : ServerM (Option Range) := do
+  -- This just checks that the cursor is over a renameable identifier
+  let srcSearchPath := (← read).srcSearchPath
+  let some module ← srcSearchPath.searchModuleNameOfUri p.textDocument.uri
+    | return none
+  let references ← (← read).references.get
+  return references.findRange? module p.position (includeStop := true)
+
+def handleRename (p : RenameParams) : ServerM Lsp.WorkspaceEdit := do
+  if (String.toName p.newName).isAnonymous then
+    throwServerError s!"Can't rename: `{p.newName}` is not an identifier"
+  let mut refs : Std.HashMap DocumentUri (RBMap Lsp.Position Lsp.Position compare) := ∅
+  for { uri, range } in (← handleReference { p with context.includeDeclaration := true }) do
+    refs := refs.insert uri <| (refs.getD uri ∅).insert range.start range.end
+  -- We have to filter the list of changes to put the ranges in order and
+  -- remove any duplicates or overlapping ranges, or else the rename will not apply
+  let changes := refs.fold (init := ∅) fun changes uri map => Id.run do
+    let mut last := ⟨0, 0⟩
+    let mut arr := #[]
+    for (start, stop) in map do
+      if last ≤ start then
+        arr := arr.push { range := ⟨start, stop⟩, newText := p.newName }
+        last := stop
+    return changes.insert uri arr
+  return { changes? := some changes }
+
 end RequestHandling
 
 section NotificationHandling
-  def handleDidOpen (p : DidOpenTextDocumentParams) : ServerM Unit :=
+  def handleDidOpen (p : LeanDidOpenTextDocumentParams) : ServerM Unit :=
     let doc := p.textDocument
-    /- NOTE(WN): `toFileMap` marks line beginnings as immediately following
-       "\n", which should be enough to handle both LF and CRLF correctly.
-       This is because LSP always refers to characters by (line, column),
-       so if we get the line number correct it shouldn't matter that there
-       is a CR there. -/
-    startFileWorker ⟨doc.uri, doc.version, doc.text.toFileMap⟩
+    /- Note (kmill): LSP always refers to characters by (line, column),
+      so converting CRLF to LF preserves line and column numbers. -/
+    startFileWorker ⟨doc.uri, doc.version, doc.text.crlfToLf.toFileMap, p.dependencyBuildMode?.getD .always⟩
 
   def handleDidChange (p : DidChangeTextDocumentParams) : ServerM Unit := do
     let doc := p.textDocument
     let changes := p.contentChanges
-    let fw ← findFileWorker! p.textDocument.uri
+    let some fw ← findFileWorker? p.textDocument.uri
+      -- Global search and replace in VS Code will send `didChange` to files that were never opened.
+      | return
     let oldDoc := fw.doc
     let newVersion := doc.version?.getD 0
     if changes.isEmpty then
       return
     let newDocText := foldDocumentChanges changes oldDoc.text
-    let newDoc : DocumentMeta := ⟨doc.uri, newVersion, newDocText⟩
+    let newDoc : DocumentMeta := ⟨doc.uri, newVersion, newDocText, oldDoc.dependencyBuildMode⟩
     updateFileWorkers { fw with doc := newDoc }
-    tryWriteMessage doc.uri (Notification.mk "textDocument/didChange" p) (restartCrashedWorker := true)
+    let notification := Notification.mk "textDocument/didChange" p
+    -- Don't queue failed `didChange` notifications because we already accumulate them in the
+    -- document and hand the updated document to the file worker when restarting it.
+    tryWriteMessage doc.uri notification (restartCrashedWorker := true) (queueFailedMessage := false)
+
+  /--
+  When a file is saved, notifies all file workers for files that depend on this file that this
+  specific import is now stale so that the file worker can issue a diagnostic asking users to
+  restart the file.
+  -/
+  def handleDidSave (p : DidSaveTextDocumentParams) : ServerM Unit := do
+    let s ← read
+    let fileWorkers ← s.fileWorkersRef.get
+    let importData  ← s.importData.get
+    let dependents := importData.importedBy.findD p.textDocument.uri ∅
+
+    for ⟨uri, _⟩ in fileWorkers do
+      if ! dependents.contains uri then
+        continue
+      notifyAboutStaleDependency uri p.textDocument.uri
 
   def handleDidClose (p : DidCloseTextDocumentParams) : ServerM Unit :=
     terminateFileWorker p.textDocument.uri
 
   def handleDidChangeWatchedFiles (p : DidChangeWatchedFilesParams) : ServerM Unit := do
-    let references := (← read).references
-    let oleanSearchPath ← Lean.searchPathRef.get
-    let ileans ← oleanSearchPath.findAllWithExt "ilean"
-    for change in p.changes do
-      if let some path := fileUriToPath? change.uri then
-      if let FileChangeType.Deleted := change.type then
-        references.modify (fun r => r.removeIlean path)
-      else if ileans.contains path then
+    let changes := p.changes.filterMap fun c => do return (c, ← fileUriToPath? c.uri)
+    let leanChanges := changes.filter fun (_, path) => path.extension == "lean"
+    let ileanChanges := changes.filter fun (_, path) => path.extension == "ilean"
+    if ! leanChanges.isEmpty then
+      let importData ← (← read).importData.get
+      for (c, _) in leanChanges do
+        let dependents := importData.importedBy.findD c.uri ∅
+        for dependent in dependents do
+          notifyAboutStaleDependency dependent c.uri
+    if ! ileanChanges.isEmpty then
+      let references := (← read).references
+      let oleanSearchPath ← Lean.searchPathRef.get
+      for (c, path) in ileanChanges do
+        if let FileChangeType.Deleted := c.type then
+          references.modify (fun r => r.removeIlean path)
+          continue
+        let isIleanInSearchPath := (← searchModuleNameOfFileName path oleanSearchPath).isSome
+        if ! isIleanInSearchPath then
+          continue
         try
           let ilean ← Ilean.load path
-          if let FileChangeType.Changed := change.type then
+          if let FileChangeType.Changed := c.type then
             references.modify (fun r => r.removeIlean path |>.addIlean path ilean)
           else
             references.modify (fun r => r.addIlean path ilean)
@@ -432,15 +849,18 @@ section NotificationHandling
       if (← fw.pendingRequestsRef.get).contains p.id then
         tryWriteMessage uri (Notification.mk "$/cancelRequest" p) (queueFailedMessage := false)
 
-  def forwardNotification {α : Type} [ToJson α] [FileSource α] (method : String) (params : α) : ServerM Unit :=
+  def forwardNotification {α : Type} [ToJson α] [FileSource α] (method : String) (params : α)
+      : ServerM Unit :=
     tryWriteMessage (fileSource params) (Notification.mk method params) (queueFailedMessage := true)
 end NotificationHandling
 
 section MessageHandling
   def parseParams (paramType : Type) [FromJson paramType] (params : Json) : ServerM paramType :=
     match fromJson? params with
-    | Except.ok parsed => pure parsed
-    | Except.error inner => throwServerError s!"Got param with wrong structure: {params.compress}\n{inner}"
+    | Except.ok parsed =>
+      pure parsed
+    | Except.error inner =>
+      throwServerError s!"Got param with wrong structure: {params.compress}\n{inner}"
 
   def forwardRequestToWorker (id : RequestID) (method : String) (params : Json) : ServerM Unit := do
     let uri: DocumentUri ←
@@ -495,24 +915,66 @@ section MessageHandling
         (← read).hOut.writeLspResponse ⟨id, definitions⟩
         return
     match method with
-      | "textDocument/references" => handle ReferenceParams (Array Location) handleReference
-      | "workspace/symbol" => handle WorkspaceSymbolParams (Array SymbolInformation) handleWorkspaceSymbol
-      | _ => forwardRequestToWorker id method params
+      | "textDocument/references" =>
+        handle ReferenceParams (Array Location) handleReference
+      | "workspace/symbol" =>
+        handle WorkspaceSymbolParams (Array SymbolInformation) handleWorkspaceSymbol
+      | "textDocument/prepareCallHierarchy" =>
+        handle CallHierarchyPrepareParams (Array CallHierarchyItem) handlePrepareCallHierarchy
+      | "callHierarchy/incomingCalls" =>
+        handle CallHierarchyIncomingCallsParams (Array CallHierarchyIncomingCall)
+          handleCallHierarchyIncomingCalls
+      | "callHierarchy/outgoingCalls" =>
+        handle Lsp.CallHierarchyOutgoingCallsParams (Array CallHierarchyOutgoingCall)
+          handleCallHierarchyOutgoingCalls
+      | "textDocument/prepareRename" =>
+        handle PrepareRenameParams (Option Range) handlePrepareRename
+      | "textDocument/rename" =>
+        handle RenameParams WorkspaceEdit handleRename
+      | _ =>
+        forwardRequestToWorker id method params
 
   def handleNotification (method : String) (params : Json) : ServerM Unit := do
-    let handle := (fun α [FromJson α] (handler : α → ServerM Unit) => parseParams α params >>= handler)
+    let handle := fun α [FromJson α] (handler : α → ServerM Unit) =>
+      parseParams α params >>= handler
     match method with
-    | "textDocument/didOpen"            => handle _ handleDidOpen
-    | "textDocument/didChange"          => handle DidChangeTextDocumentParams handleDidChange
-    | "textDocument/didClose"           => handle DidCloseTextDocumentParams handleDidClose
-    | "workspace/didChangeWatchedFiles" => handle DidChangeWatchedFilesParams handleDidChangeWatchedFiles
-    | "$/cancelRequest"                 => handle CancelParams handleCancelRequest
-    | "$/lean/rpc/connect"              => handle RpcConnectParams (forwardNotification method)
-    | "$/lean/rpc/release"              => handle RpcReleaseParams (forwardNotification method)
-    | "$/lean/rpc/keepAlive"            => handle RpcKeepAliveParams (forwardNotification method)
-    | _                                 =>
-      if !"$/".isPrefixOf method then  -- implementation-dependent notifications can be safely ignored
+    | "textDocument/didOpen" =>
+      handle _ handleDidOpen
+    | "textDocument/didChange" =>
+      handle DidChangeTextDocumentParams handleDidChange
+    | "textDocument/didClose" =>
+      handle DidCloseTextDocumentParams handleDidClose
+    | "textDocument/didSave" =>
+      handle DidSaveTextDocumentParams handleDidSave
+    | "workspace/didChangeWatchedFiles" =>
+      handle DidChangeWatchedFilesParams handleDidChangeWatchedFiles
+    | "$/cancelRequest" =>
+      handle CancelParams handleCancelRequest
+    | "$/lean/rpc/connect" =>
+      handle RpcConnectParams (forwardNotification method)
+    | "$/lean/rpc/release" =>
+      handle RpcReleaseParams (forwardNotification method)
+    | "$/lean/rpc/keepAlive"  =>
+      handle RpcKeepAliveParams (forwardNotification method)
+    | _ =>
+      -- implementation-dependent notifications can be safely ignored
+      if !"$/".isPrefixOf method then
         (←read).hLog.putStrLn s!"Got unsupported notification: {method}"
+
+  def handleResponse (id : RequestID) (result : Json) : ServerM Unit := do
+    let some translation ← (← read).serverRequestData.modifyGet (·.translateInboundResponse id)
+      | return
+    tryWriteMessage translation.sourceUri (Response.mk translation.localID result)
+
+  def handleResponseError
+      (id      : RequestID)
+      (code    : ErrorCode)
+      (message : String)
+      (data?   : Option Json)
+      : ServerM Unit := do
+    let some translation ← (← read).serverRequestData.modifyGet (·.translateInboundResponse id)
+      | return
+    tryWriteMessage translation.sourceUri (ResponseError.mk translation.localID code message data?)
 end MessageHandling
 
 section MainLoop
@@ -521,7 +983,8 @@ section MainLoop
     for ⟨uri, _⟩ in fileWorkers do
       terminateFileWorker uri
     for ⟨_, fw⟩ in fileWorkers do
-      discard <| IO.wait fw.commTask
+      -- TODO: Wait for process group to finish instead
+      try let _ ← fw.killProcAndWait catch _ => pure ()
 
   inductive ServerEvent where
     | workerEvent (fw : FileWorker) (ev : WorkerEvent)
@@ -534,7 +997,7 @@ section MainLoop
       /- Runs asynchronously. -/
       let msg ← st.hIn.readLspMessage
       pure <| ServerEvent.clientMsg msg
-    let clientTask := (← IO.asTask readMsgAction).map fun
+    let clientTask := (← IO.asTask (prio := Task.Priority.dedicated) readMsgAction).map fun
       | Except.ok ev   => ev
       | Except.error e => ServerEvent.clientError e
     return clientTask
@@ -544,7 +1007,16 @@ section MainLoop
     let workers ← st.fileWorkersRef.get
     let mut workerTasks := #[]
     for (_, fw) in workers do
-      if let WorkerState.running := fw.state then
+      -- When the forwarding task crashes, its return value will be stuck at
+      -- `WorkerEvent.crashed _`.
+      -- We want to handle this event only once, not over and over again,
+      -- so once the state becomes `WorkerState.crashed _ .fileWorkerToClientForwarding`
+      -- as a result of `WorkerEvent.crashed _`, we stop handling this event until
+      -- eventually the file worker is restarted by a notification from the client.
+      -- We do not want to filter the forwarding task in case of
+      -- `WorkerState.crashed _ .clientToFileWorkerForwarding`, since the forwarding task
+      -- exit code may still contain valuable information in this case (e.g. that the imports changed).
+      if !(fw.state matches WorkerState.crashed _ .fileWorkerToClientForwarding) then
         workerTasks := workerTasks.push <| fw.commTask.map (ServerEvent.workerEvent fw)
 
     let ev ← IO.waitAny (clientTask :: workerTasks.toList)
@@ -557,11 +1029,12 @@ section MainLoop
       | Message.request id method (some params) =>
         handleRequest id method (toJson params)
         mainLoop (←runClientTask)
-      | Message.response .. =>
-        -- TODO: handle client responses
+      | Message.response id result =>
+        handleResponse id result
         mainLoop (←runClientTask)
-      | Message.responseError _ _ e .. =>
-        throwServerError s!"Unhandled response error: {e}"
+      | Message.responseError id code message data? =>
+        handleResponseError id code message data?
+        mainLoop (←runClientTask)
       | Message.notification method (some params) =>
         handleNotification method (toJson params)
         mainLoop (←runClientTask)
@@ -572,12 +1045,16 @@ section MainLoop
       | WorkerEvent.ioError e =>
         throwServerError s!"IO error while processing events for {fw.doc.uri}: {e}"
       | WorkerEvent.crashed _ =>
-        handleCrash fw.doc.uri #[]
+        handleCrash fw.doc.uri fw.queuedMsgs .fileWorkerToClientForwarding
         mainLoop clientTask
       | WorkerEvent.terminated =>
-        throwServerError "Internal server error: got termination event for worker that should have been removed"
+        throwServerError <| "Internal server error: got termination event for worker that "
+          ++ "should have been removed"
       | .importsChanged =>
+        let uri := fw.doc.uri
+        let queuedMsgs := fw.queuedMsgs
         startFileWorker fw.doc
+        tryDischargeQueuedMessages uri queuedMsgs
         mainLoop clientTask
 end MainLoop
 
@@ -587,17 +1064,22 @@ def mkLeanServerCapabilities : ServerCapabilities := {
     change            := TextDocumentSyncKind.incremental
     willSave          := false
     willSaveWaitUntil := false
-    save?             := none
+    save?             := some { includeText := true }
   }
   -- refine
   completionProvider? := some {
     triggerCharacters? := some #["."]
+    resolveProvider := true
   }
   hoverProvider := true
   declarationProvider := true
   definitionProvider := true
   typeDefinitionProvider := true
   referencesProvider := true
+  callHierarchyProvider := true
+  renameProvider? := some {
+    prepareProvider := true
+  }
   workspaceSymbolProvider := true
   documentHighlightProvider := true
   documentSymbolProvider := true
@@ -614,50 +1096,100 @@ def mkLeanServerCapabilities : ServerCapabilities := {
     resolveProvider? := true,
     codeActionKinds? := some #["quickfix", "refactor"]
   }
+  inlayHintProvider? := some {
+    resolveProvider? := false
+  }
 }
 
 def initAndRunWatchdogAux : ServerM Unit := do
   let st ← read
   try
     discard $ st.hIn.readLspNotificationAs "initialized" InitializedParams
+    st.hOut.writeLspRequest {
+      id := RequestID.str "register_lean_watcher"
+      method := "client/registerCapability"
+      param := some {
+        registrations := #[ {
+          id := "lean_watcher"
+          method := "workspace/didChangeWatchedFiles"
+          registerOptions := some <| toJson {
+            watchers := #[ { globPattern := "**/*.lean" }, { globPattern := "**/*.ilean" } ]
+          : DidChangeWatchedFilesRegistrationOptions }
+        } ]
+      : RegistrationParams }
+    }
     let clientTask ← runClientTask
     mainLoop clientTask
   catch err =>
     shutdown
     throw err
-  /- NOTE(WN): It looks like instead of sending the `exit` notification,
-  VSCode just closes the stream. In that case, pretend we got an `exit`. -/
-  let Message.notification "exit" none ←
-    try st.hIn.readLspMessage
-    catch _ => pure (Message.notification "exit" none)
-    | throwServerError "Got `shutdown` request, expected an `exit` notification"
+
+  while true do
+    let msg: JsonRpc.Message ←
+      try
+        st.hIn.readLspMessage
+      catch _ =>
+        /-
+        NOTE(WN): It looks like instead of sending the `exit` notification,
+        VSCode sometimes just closes the stream. In that case, pretend we got an `exit`.
+        -/
+        pure (Message.notification "exit" none)
+    match msg with
+    | .notification "exit" none =>
+      break
+    | .request id _ _ =>
+      -- The LSP spec suggests that requests after 'shutdown' should be errored in this manner.
+      st.hOut.writeLspResponseError {
+        id,
+        code := .invalidRequest,
+        message := "Request received after 'shutdown' request."
+      }
+    | _ =>
+      -- Ignore all other message types.
+      continue
 
 def findWorkerPath : IO System.FilePath := do
   let mut workerPath ← IO.appPath
   if let some path := (←IO.getEnv "LEAN_SYSROOT") then
-    workerPath := System.FilePath.mk path / "bin" / "lean" |>.withExtension System.FilePath.exeExtension
+    workerPath := System.FilePath.mk path / "bin" / "lean"
+      |>.addExtension System.FilePath.exeExtension
   if let some path := (←IO.getEnv "LEAN_WORKER_PATH") then
     workerPath := System.FilePath.mk path
   return workerPath
 
-def loadReferences : IO References := do
-  let oleanSearchPath ← Lean.searchPathRef.get
-  let mut refs := References.empty
-  for path in ← oleanSearchPath.findAllWithExt "ilean" do
-    try
-      refs := refs.addIlean path (← Ilean.load path)
-    catch _ =>
-      -- could be a race with the build system, for example
-      -- ilean load errors should not be fatal, but we *should* log them
-      -- when we add logging to the server
-      pure ()
-  return refs
+/--
+Starts loading .ileans present in the search path asynchronously in an IO task.
+This ensures that server startup is not blocked by loading the .ileans.
+In return, while the .ileans are being loaded, users will only get incomplete
+results in requests that need references.
+-/
+def startLoadingReferences (references : IO.Ref References) : IO Unit := do
+  -- Discard the task; there isn't much we can do about this failing,
+  -- but we should try to continue server operations regardless
+  let _ ← IO.asTask (prio := Task.Priority.dedicated) do
+    let oleanSearchPath ← Lean.searchPathRef.get
+    for path in ← oleanSearchPath.findAllWithExt "ilean" do
+      try
+        let ilean ← Ilean.load path
+        references.modify fun refs =>
+          refs.addIlean path ilean
+      catch _ =>
+        -- could be a race with the build system, for example
+        -- ilean load errors should not be fatal, but we *should* log them
+        -- when we add logging to the server
+        pure ()
 
 def initAndRunWatchdog (args : List String) (i o e : FS.Stream) : IO Unit := do
   let workerPath ← findWorkerPath
-  let srcSearchPath ← initSrcSearchPath (← getBuildDir)
-  let references ← IO.mkRef (← loadReferences)
+  let srcSearchPath ← initSrcSearchPath
+  let references ← IO.mkRef .empty
+  startLoadingReferences references
   let fileWorkersRef ← IO.mkRef (RBMap.empty : FileWorkerMap)
+  let serverRequestData ← IO.mkRef {
+    pendingServerRequests := RBMap.empty
+    freshServerRequestID  := 0
+  }
+  let importData ← IO.mkRef ⟨RBMap.empty, RBMap.empty⟩
   let i ← maybeTee "wdIn.txt" false i
   let o ← maybeTee "wdOut.txt" true o
   let e ← maybeTee "wdErr.txt" true e
@@ -668,34 +1200,23 @@ def initAndRunWatchdog (args : List String) (i o e : FS.Stream) : IO Unit := do
       capabilities := mkLeanServerCapabilities
       serverInfo?  := some {
         name     := "Lean 4 Server"
-        version? := "0.1.2"
+        version? := "0.2.0"
       }
       : InitializeResult
     }
   }
-  o.writeLspRequest {
-    id := RequestID.str "register_ilean_watcher"
-    method := "client/registerCapability"
-    param := some {
-      registrations := #[ {
-        id := "ilean_watcher"
-        method := "workspace/didChangeWatchedFiles"
-        registerOptions := some <| toJson {
-          watchers := #[ { globPattern := "**/*.ilean" } ]
-        : DidChangeWatchedFilesRegistrationOptions }
-      } ]
-    : RegistrationParams }
-  }
   ReaderT.run initAndRunWatchdogAux {
-    hIn            := i
-    hOut           := o
-    hLog           := e
-    args           := args
-    fileWorkersRef := fileWorkersRef
-    initParams     := initRequest.param
+    hIn              := i
+    hOut             := o
+    hLog             := e
+    args             := args
+    fileWorkersRef   := fileWorkersRef
+    initParams       := initRequest.param
     workerPath
     srcSearchPath
     references
+    serverRequestData
+    importData
     : ServerContext
   }
 
@@ -706,9 +1227,9 @@ def watchdogMain (args : List String) : IO UInt32 := do
   let e ← IO.getStderr
   try
     initAndRunWatchdog args i o e
-    return 0
+    IO.Process.exit 0 -- Terminate all tasks of this process
   catch err =>
     e.putStrLn s!"Watchdog error: {err}"
-    return 1
+    IO.Process.exit 1 -- Terminate all tasks of this process
 
 end Lean.Server.Watchdog

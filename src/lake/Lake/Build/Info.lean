@@ -3,10 +3,10 @@ Copyright (c) 2022 Mac Malone. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Mac Malone
 -/
+prelude
 import Lake.Config.LeanExe
 import Lake.Config.ExternLib
 import Lake.Build.Facets
-import Lake.Util.EquipT
 
 /-!
 # Build Info
@@ -17,6 +17,7 @@ the build.
 -/
 
 namespace Lake
+open Lean (Name)
 
 /-- The type of Lake's build info. -/
 inductive BuildInfo
@@ -62,7 +63,7 @@ abbrev ExternLib.dynlibBuildKey (self : ExternLib) : BuildKey :=
 /-! ### Build Info to Key -/
 
 /-- The key that identifies the build in the Lake build store. -/
-abbrev BuildInfo.key : (self : BuildInfo) → BuildKey
+@[reducible] def BuildInfo.key : (self : BuildInfo) → BuildKey
 | moduleFacet m f => m.facetBuildKey f
 | packageFacet p f => p.facetBuildKey f
 | libraryFacet l f => l.facetBuildKey f
@@ -110,27 +111,6 @@ instance [FamilyOut TargetData ExternLib.dynlibFacet α]
   family_key_eq_type := by unfold BuildData; simp
 
 --------------------------------------------------------------------------------
-/-! ## Recursive Building                                                     -/
---------------------------------------------------------------------------------
-
-/-- A build function for any element of the Lake build index. -/
-abbrev IndexBuildFn (m : Type → Type v) :=
-  -- `DBuildFn BuildInfo (BuildData ·.key) m` with less imports
-  (info : BuildInfo) → m (BuildData info.key)
-
-/-- A transformer to equip a monad with a build function for the Lake index. -/
-abbrev IndexT (m : Type → Type v) := EquipT (IndexBuildFn m) m
-
-/-- The monad for build functions that are part of the index. -/
-abbrev IndexBuildM := IndexT RecBuildM
-
-/-- Fetch the result associated with the info using the Lake build index. -/
-@[inline] def BuildInfo.fetch (self : BuildInfo) [FamilyOut BuildData self.key α] : IndexBuildM α :=
-  fun build => cast (by simp) <| build self
-
-export BuildInfo (fetch)
-
---------------------------------------------------------------------------------
 /-! ## Build Info & Facets                                                    -/
 --------------------------------------------------------------------------------
 
@@ -144,29 +124,32 @@ definitions.
 -/
 
 /-- The direct local imports of the Lean module. -/
-abbrev Module.importsFacet := `lean.imports
-module_data lean.imports : Array Module
+abbrev Module.importsFacet := `imports
+module_data imports : Array Module
 
 /-- The transitive local imports of the Lean module. -/
-abbrev Module.transImportsFacet := `lean.transImports
-module_data lean.transImports : Array Module
+abbrev Module.transImportsFacet := `transImports
+module_data transImports : Array Module
 
 /-- The transitive local imports of the Lean module. -/
-abbrev Module.precompileImportsFacet := `lean.precompileImports
-module_data lean.precompileImports : Array Module
+abbrev Module.precompileImportsFacet := `precompileImports
+module_data precompileImports : Array Module
 
 /-- Shared library for `--load-dynlib`. -/
 abbrev Module.dynlibFacet := `dynlib
-module_data dynlib : BuildJob Dynlib
+module_data dynlib : Dynlib
 
 /-- A Lean library's Lean modules. -/
 abbrev LeanLib.modulesFacet := `modules
 library_data modules : Array Module
 
-/-- The package's complete array of transitive dependencies. -/
+/-- The package's array of dependencies. -/
 abbrev Package.depsFacet := `deps
 package_data deps : Array Package
 
+/-- The package's complete array of transitive dependencies. -/
+abbrev Package.transDepsFacet := `transDeps
+package_data transDeps : Array Package
 
 /-!
 ### Facet Build Info Helper Constructors
@@ -193,11 +176,8 @@ abbrev facet (facet : Name) (self : Module) : BuildInfo :=
 @[inherit_doc depsFacet] abbrev deps  (self : Module) :=
   self.facet depsFacet
 
-@[inherit_doc leanBinFacet] abbrev leanBin  (self : Module) :=
-  self.facet leanBinFacet
-
-@[inherit_doc importBinFacet] abbrev importBin (self : Module) :=
-  self.facet importBinFacet
+@[inherit_doc leanArtsFacet] abbrev leanArts  (self : Module) :=
+  self.facet leanArtsFacet
 
 @[inherit_doc oleanFacet] abbrev olean (self : Module) :=
   self.facet oleanFacet
@@ -208,8 +188,29 @@ abbrev facet (facet : Name) (self : Module) : BuildInfo :=
 @[inherit_doc cFacet] abbrev c (self : Module) :=
   self.facet cFacet
 
+@[inherit_doc cFacet] abbrev bc (self : Module) :=
+  self.facet bcFacet
+
 @[inherit_doc oFacet] abbrev o (self : Module) :=
   self.facet oFacet
+
+@[inherit_doc oExportFacet] abbrev oExport (self : Module) :=
+  self.facet oExportFacet
+
+@[inherit_doc oNoExportFacet] abbrev oNoExport (self : Module) :=
+  self.facet oNoExportFacet
+
+@[inherit_doc coFacet] abbrev co (self : Module) :=
+  self.facet coFacet
+
+@[inherit_doc coExportFacet] abbrev coExport (self : Module) :=
+  self.facet coExportFacet
+
+@[inherit_doc coNoExportFacet] abbrev coNoExport (self : Module) :=
+  self.facet coNoExportFacet
+
+@[inherit_doc bcoFacet] abbrev bco (self : Module) :=
+  self.facet bcoFacet
 
 @[inherit_doc dynlibFacet] abbrev dynlib (self : Module) :=
   self.facet dynlibFacet
@@ -220,13 +221,47 @@ end Module
 abbrev Package.facet (facet : Name) (self : Package) : BuildInfo :=
   .packageFacet self facet
 
-@[inherit_doc releaseFacet]
-abbrev Package.release (self : Package) : BuildInfo :=
-  self.facet releaseFacet
+@[inherit_doc buildCacheFacet]
+abbrev Package.buildCache (self : Package) : BuildInfo :=
+  self.facet buildCacheFacet
+
+@[inherit_doc optBuildCacheFacet]
+abbrev Package.optBuildCache (self : Package) : BuildInfo :=
+  self.facet optBuildCacheFacet
+
+@[inherit_doc reservoirBarrelFacet]
+abbrev Package.reservoirBarrel (self : Package) : BuildInfo :=
+  self.facet reservoirBarrelFacet
+
+@[inherit_doc optReservoirBarrelFacet]
+abbrev Package.optReservoirBarrel (self : Package) : BuildInfo :=
+  self.facet optReservoirBarrelFacet
+
+@[inherit_doc gitHubReleaseFacet]
+abbrev Package.gitHubRelease (self : Package) : BuildInfo :=
+  self.facet gitHubReleaseFacet
+
+@[inherit_doc optGitHubReleaseFacet]
+abbrev Package.optGitHubRelease (self : Package) : BuildInfo :=
+  self.facet optGitHubReleaseFacet
+
+@[deprecated gitHubRelease (since := "2024-09-27")]
+abbrev Package.release := @gitHubRelease
+
+@[deprecated optGitHubRelease (since := "2024-09-27")]
+abbrev Package.optRelease := @optGitHubRelease
 
 @[inherit_doc extraDepFacet]
 abbrev Package.extraDep (self : Package) : BuildInfo :=
   self.facet extraDepFacet
+
+@[inherit_doc depsFacet]
+abbrev Package.deps (self : Package) : BuildInfo :=
+  self.facet depsFacet
+
+@[inherit_doc transDepsFacet]
+abbrev Package.transDeps (self : Package) : BuildInfo :=
+  self.facet transDepsFacet
 
 /-- Build info for a custom package target. -/
 abbrev Package.target (target : Name) (self : Package) : BuildInfo :=
@@ -240,13 +275,17 @@ abbrev LeanLib.facet (self : LeanLib) (facet : Name) : BuildInfo :=
 abbrev LeanLib.modules (self : LeanLib) : BuildInfo :=
   self.facet modulesFacet
 
-@[inherit_doc leanFacet]
-abbrev LeanLib.lean (self : LeanLib) : BuildInfo :=
-  self.facet leanFacet
+@[inherit_doc leanArtsFacet]
+abbrev LeanLib.leanArts (self : LeanLib) : BuildInfo :=
+  self.facet leanArtsFacet
 
 @[inherit_doc staticFacet]
 abbrev LeanLib.static (self : LeanLib) : BuildInfo :=
   self.facet staticFacet
+
+@[inherit_doc staticExportFacet]
+abbrev LeanLib.staticExport (self : LeanLib) : BuildInfo :=
+  self.facet staticExportFacet
 
 @[inherit_doc sharedFacet]
 abbrev LeanLib.shared (self : LeanLib) : BuildInfo :=

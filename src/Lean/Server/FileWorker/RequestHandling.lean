@@ -4,18 +4,12 @@ Released under Apache 2.0 license as described in the file LICENSE.
 
 Authors: Wojciech Nawrocki, Marc Huisinga
 -/
-import Lean.DeclarationRange
-
-import Lean.Data.Json
-import Lean.Data.Lsp
-
-import Lean.Server.FileWorker.Utils
-import Lean.Server.Requests
+prelude
+import Lean.Server.FileWorker.InlayHints
+import Lean.Server.FileWorker.SemanticHighlighting
 import Lean.Server.Completion
 import Lean.Server.References
-import Lean.Server.GoTo
 
-import Lean.Widget.InteractiveGoal
 import Lean.Widget.Diff
 
 namespace Lean.Server.FileWorker
@@ -23,24 +17,52 @@ open Lsp
 open RequestM
 open Snapshots
 
+open Lean.Parser.Tactic.Doc (alternativeOfTactic getTacticExtensionString)
+
+def findCompletionCmdDataAtPos
+    (doc : EditableDocument)
+    (pos : String.Pos)
+    : Task (Option (Syntax × Elab.InfoTree)) :=
+  findCmdDataAtPos doc (pos := pos) fun s => Id.run do
+    let some tailPos := s.stx.getTailPos?
+      | return false
+    return pos.byteIdx <= tailPos.byteIdx + s.stx.getTrailingSize
+
 def handleCompletion (p : CompletionParams)
     : RequestM (RequestTask CompletionList) := do
   let doc ← readDoc
   let text := doc.meta.text
   let pos := text.lspPosToUtf8Pos p.position
   let caps := (← read).initParams.capabilities
-  -- dbg_trace ">> handleCompletion invoked {pos}"
-  -- NOTE: use `+ 1` since we sometimes want to consider invalid input technically after the command,
-  -- such as a trailing dot after an option name. This shouldn't be a problem since any subsequent
-  -- command starts with a keyword that (currently?) does not participate in completion.
-  withWaitFindSnap doc (·.endPos + ' ' >= pos)
-    (notFoundX := pure { items := #[], isIncomplete := true })
-    (abortedX :=
+  mapTask (findCompletionCmdDataAtPos doc pos) fun cmdData? => do
+    let some (cmdStx, infoTree) := cmdData?
       -- work around https://github.com/microsoft/vscode/issues/155738
-      pure { items := #[{label := "-"}], isIncomplete := true }) fun snap => do
-      if let some r ← Completion.find? doc.meta.text pos snap.infoTree caps then
-        return r
-      return { items := #[ ], isIncomplete := true }
+      | return {
+        items := #[{label := "-", data? := toJson { params := p : Lean.Lsp.CompletionItemData }}],
+        isIncomplete := true
+      }
+    Completion.find? p doc.meta.text pos cmdStx infoTree caps
+
+/--
+Handles `completionItem/resolve` requests that are sent by the client after the user selects
+a completion item that was provided by `textDocument/completion`. Resolving the item fills the
+`detail?` field of the item with the pretty-printed type.
+This control flow is necessary because pretty-printing the type for every single completion item
+(even those never selected by the user) is inefficient.
+-/
+def handleCompletionItemResolve (item : CompletionItem)
+    : RequestM (RequestTask CompletionItem) := do
+  let doc ← readDoc
+  let text := doc.meta.text
+  let some (data : ResolvableCompletionItemData) := item.data?.bind fun data => (fromJson? data).toOption
+    | return .pure item
+  let some id := data.id?
+    | return .pure item
+  let pos := text.lspPosToUtf8Pos data.params.position
+  mapTask (findCompletionCmdDataAtPos doc pos) fun cmdData? => do
+    let some (cmdStx, infoTree) := cmdData?
+      | return item
+    Completion.resolveCompletionItem? text pos cmdStx infoTree item id data.cPos
 
 open Elab in
 def handleHover (p : HoverParams)
@@ -62,7 +84,9 @@ def handleHover (p : HoverParams)
       let stack? := snap.stx.findStack? (·.getRange?.any (·.contains hoverPos))
       let stxDoc? ← match stack? with
         | some stack => stack.findSomeM? fun (stx, _) => do
-          return (← findDocString? snap.env stx.getKind).map (·, stx.getRange?.get!)
+          let .node _ kind _ := stx | pure none
+          let docStr ← findDocString? snap.env kind
+          return docStr.map (·, stx.getRange?.get!)
         | none => pure none
 
       -- now try info tree
@@ -119,13 +143,22 @@ def locationLinksOfInfo (kind : GoToKind) (ictx : InfoWithCtx)
   let i := ictx.info
   let ci := ictx.ctx
   let children := ictx.children
-  match i with
-  | .ofTermInfo ti =>
+
+  let locationLinksDefault : RequestM (Array LocationLink) := do
+    -- If other go-tos fail, we try to show the elaborator or parser
+    if let some ei := i.toElabInfo? then
+      if kind == declaration && ci.env.contains ei.stx.getKind then
+        return ← ci.runMetaM i.lctx <| locationLinksFromDecl i ei.stx.getKind
+      if kind == definition && ci.env.contains ei.elaborator then
+        return ← ci.runMetaM i.lctx <| locationLinksFromDecl i ei.elaborator
+    return #[]
+
+  let locationLinksFromTermInfo (ti : TermInfo) : RequestM (Array LocationLink) := do
     let mut expr := ti.expr
     if kind == type then
       expr ← ci.runMetaM i.lctx do
         return Expr.getAppFn (← instantiateMVars (← Meta.inferType expr))
-    match expr with
+    match expr.consumeMData with
     | Expr.const n .. => return ← ci.runMetaM i.lctx <| locationLinksFromDecl i n
     | Expr.fvar id .. => return ← ci.runMetaM i.lctx <| locationLinksFromBinder i id
     | _ => pure ()
@@ -143,7 +176,7 @@ def locationLinksOfInfo (kind : GoToKind) (ictx : InfoWithCtx)
       -- go-to-definition on a projection application of a typeclass
       -- should return all instances generated by TC
       expr ← ci.runMetaM i.lctx do instantiateMVars expr
-      if let .const n _ := expr.getAppFn then
+      if let .const n _ := expr.getAppFn.consumeMData then
         -- also include constant along with instance results
         let mut results ← ci.runMetaM i.lctx <| locationLinksFromDecl i n
         if let some info := ci.env.getProjectionFnInfo? n then
@@ -160,12 +193,29 @@ def locationLinksOfInfo (kind : GoToKind) (ictx : InfoWithCtx)
             | .const declName _ => do
               if ← ci.runMetaM i.lctx do Lean.Meta.isInstance declName then pure #[declName] else pure #[]
             | .app fn arg => do pure $ (← extractInstances fn).append (← extractInstances arg)
+            | .mdata _ e => extractInstances e
             | _ => pure #[]
           if let some instArg := appArgs.get? instIdx then
             for inst in (← extractInstances instArg) do
               results := results.append (← ci.runMetaM i.lctx <| locationLinksFromDecl i inst)
             results := results.append elaborators -- put elaborators at the end of the results
         return results
+    locationLinksDefault
+
+  match i with
+  | .ofTermInfo ti =>
+    return ← locationLinksFromTermInfo ti
+  | .ofDelabTermInfo { toTermInfo := ti, location?, .. } =>
+    if let some location := location? then
+      if let some targetUri ← documentUriFromModule rc.srcSearchPath location.module then
+        let range := location.range.toLspRange
+        let result : LocationLink := {
+          targetUri, targetRange := range, targetSelectionRange := range,
+          originSelectionRange? := (·.toLspRange text) <$> i.range?
+        }
+        return #[result]
+      -- If we fail to find a DocumentUri, fall through and use the default method to at least try to have something to jump to.
+    return ← locationLinksFromTermInfo ti
   | .ofFieldInfo fi =>
     if kind == type then
       let expr ← ci.runMetaM i.lctx do
@@ -180,13 +230,7 @@ def locationLinksOfInfo (kind : GoToKind) (ictx : InfoWithCtx)
     if kind == definition || kind == declaration then
       return ← ci.runMetaM i.lctx <| locationLinksFromImport i
   | _ => pure ()
-  -- If other go-tos fail, we try to show the elaborator or parser
-  if let some ei := i.toElabInfo? then
-    if kind == declaration && ci.env.contains ei.stx.getKind then
-      return ← ci.runMetaM i.lctx <| locationLinksFromDecl i ei.stx.getKind
-    if kind == definition && ci.env.contains ei.elaborator then
-      return ← ci.runMetaM i.lctx <| locationLinksFromDecl i ei.elaborator
-  return #[]
+  locationLinksDefault
 
 open Elab GoToKind in
 def handleDefinition (kind : GoToKind) (p : TextDocumentPositionParams)
@@ -195,7 +239,7 @@ def handleDefinition (kind : GoToKind) (p : TextDocumentPositionParams)
   let text := doc.meta.text
   let hoverPos := text.lspPosToUtf8Pos p.position
 
-  withWaitFindSnap doc (fun s => s.endPos > hoverPos)
+  withWaitFindSnap doc (fun s => s.endPos >= hoverPos)
     (notFoundX := pure #[]) fun snap => do
       if let some infoWithCtx := snap.infoTree.hoverableInfoAt? (omitIdentApps := true) (includeStop := true /- #767 -/) hoverPos then
         locationLinksOfInfo kind infoWithCtx snap.infoTree
@@ -206,31 +250,27 @@ def getInteractiveGoals (p : Lsp.PlainGoalParams) : RequestM (RequestTask (Optio
   let doc ← readDoc
   let text := doc.meta.text
   let hoverPos := text.lspPosToUtf8Pos p.position
-  -- NOTE: use `>=` since the cursor can be *after* the input
-  withWaitFindSnap doc (fun s => s.endPos >= hoverPos)
-    (notFoundX := return none) fun snap => do
-      if let rs@(_ :: _) := snap.infoTree.goalsAt? doc.meta.text hoverPos then
-        let goals : List Widget.InteractiveGoals ← rs.mapM fun { ctxInfo := ci, tacticInfo := ti, useAfter := useAfter, .. } => do
-          let ciAfter := { ci with mctx := ti.mctxAfter }
-          let ci := if useAfter then ciAfter else { ci with mctx := ti.mctxBefore }
-          -- compute the interactive goals
-          let goals ← ci.runMetaM {} (do
-            let goals := List.toArray <| if useAfter then ti.goalsAfter else ti.goalsBefore
-            let goals ← goals.mapM Widget.goalToInteractive
-            return {goals}
-          )
-          -- compute the goal diff
-          let goals ← ciAfter.runMetaM {} (do
-              try
-                Widget.diffInteractiveGoals useAfter ti goals
-              catch _ =>
-                -- fail silently, since this is just a bonus feature
-                return goals
-          )
-          return goals
-        return some <| goals.foldl (· ++ ·) ∅
-      else
-        return none
+  mapTask (findInfoTreeAtPosWithTrailingWhitespace doc hoverPos) <| Option.bindM fun infoTree => do
+    let rs@(_ :: _) := infoTree.goalsAt? doc.meta.text hoverPos
+      | return none
+    let goals : List Widget.InteractiveGoals ← rs.mapM fun { ctxInfo := ci, tacticInfo := ti, useAfter := useAfter, .. } => do
+      let ciAfter := { ci with mctx := ti.mctxAfter }
+      let ci := if useAfter then ciAfter else { ci with mctx := ti.mctxBefore }
+      -- compute the interactive goals
+      let goals ← ci.runMetaM {} (do
+        let goals := List.toArray <| if useAfter then ti.goalsAfter else ti.goalsBefore
+        let goals ← goals.mapM Widget.goalToInteractive
+        return ⟨goals⟩
+      )
+      -- compute the goal diff
+      ciAfter.runMetaM {} (do
+          try
+            Widget.diffInteractiveGoals useAfter ti goals
+          catch _ =>
+            -- fail silently, since this is just a bonus feature
+            return goals
+      )
+    return some <| goals.foldl (· ++ ·) ∅
 
 open Elab in
 def handlePlainGoal (p : PlainGoalParams)
@@ -252,19 +292,17 @@ def getInteractiveTermGoal (p : Lsp.PlainTermGoalParams)
   let doc ← readDoc
   let text := doc.meta.text
   let hoverPos := text.lspPosToUtf8Pos p.position
-  withWaitFindSnap doc (fun s => s.endPos > hoverPos)
-    (notFoundX := pure none) fun snap => do
-      if let some {ctx := ci, info := i@(Elab.Info.ofTermInfo ti), ..} := snap.infoTree.termGoalAt? hoverPos then
-        let ty ← ci.runMetaM i.lctx do
-          instantiateMVars <| ti.expectedType?.getD (← Meta.inferType ti.expr)
-        -- for binders, hide the last hypothesis (the binder itself)
-        let lctx' := if ti.isBinder then i.lctx.pop else i.lctx
-        let goal ← ci.runMetaM lctx' do
-          Widget.goalToInteractive (← Meta.mkFreshExprMVar ty).mvarId!
-        let range := if let some r := i.range? then r.toLspRange text else ⟨p.position, p.position⟩
-        return some { goal with range, term := ⟨ti⟩ }
-      else
-        return none
+  mapTask (findInfoTreeAtPosWithTrailingWhitespace doc hoverPos) <| Option.bindM fun infoTree => do
+    let some {ctx := ci, info := i@(Elab.Info.ofTermInfo ti), ..} := infoTree.termGoalAt? hoverPos
+      | return none
+    let ty ← ci.runMetaM i.lctx do
+      instantiateMVars <| ti.expectedType?.getD (← Meta.inferType ti.expr)
+    -- for binders, hide the last hypothesis (the binder itself)
+    let lctx' := if ti.isBinder then i.lctx.pop else i.lctx
+    let goal ← ci.runMetaM lctx' do
+      Widget.goalToInteractive (← Meta.mkFreshExprMVar ty).mvarId!
+    let range := if let some r := i.range? then r.toLspRange text else ⟨p.position, p.position⟩
+    return some { goal with range, term := ⟨ti⟩ }
 
 def handlePlainTermGoal (p : PlainTermGoalParams)
     : RequestM (RequestTask (Option PlainTermGoal)) := do
@@ -289,23 +327,23 @@ partial def handleDocumentHighlight (p : DocumentHighlightParams)
     | `(do%$i $elems) => highlightReturn? (i.getRange?.get!.toLspRange text) elems
     | stx => stx.getArgs.findSome? (highlightReturn? doRange?)
 
-  let highlightRefs? (snaps : Array Snapshot) : Option (Array DocumentHighlight) := Id.run do
+  let highlightRefs? (snaps : Array Snapshot) : IO (Option (Array DocumentHighlight)) := do
     let trees := snaps.map (·.infoTree)
-    let refs : Lsp.ModuleRefs := findModuleRefs text trees
+    let refs : Lsp.ModuleRefs ← findModuleRefs text trees |>.toLspModuleRefs
     let mut ranges := #[]
-    for ident in ← refs.findAt p.position do
-      if let some info ← refs.find? ident then
-        if let some definition := info.definition then
-          ranges := ranges.push definition
-        ranges := ranges.append info.usages
+    for ident in refs.findAt p.position (includeStop := true) do
+      if let some info := refs.get? ident then
+        if let some ⟨definitionRange, _⟩ := info.definition? then
+          ranges := ranges.push definitionRange
+        ranges := ranges.append <| info.usages.map (·.range)
     if ranges.isEmpty then
       return none
-    some <| ranges.map ({ range := ·, kind? := DocumentHighlightKind.text })
+    return some <| ranges.map ({ range := ·, kind? := DocumentHighlightKind.text })
 
-  withWaitFindSnap doc (fun s => s.endPos > pos)
+  withWaitFindSnap doc (fun s => s.endPos >= pos)
     (notFoundX := pure #[]) fun snap => do
       let (snaps, _) ← doc.cmdSnaps.getFinishedPrefix
-      if let some his := highlightRefs? snaps.toArray then
+      if let some his ← highlightRefs? snaps.toArray then
         return his
       if let some hi := highlightReturn? none snap.stx then
         return #[hi]
@@ -395,120 +433,6 @@ where
             }
             return toDocumentSymbols text stxs (syms.push sym) stack
         toDocumentSymbols text stxs syms stack
-
-def noHighlightKinds : Array SyntaxNodeKind := #[
-  -- usually have special highlighting by the client
-  ``Lean.Parser.Term.sorry,
-  ``Lean.Parser.Term.type,
-  ``Lean.Parser.Term.prop,
-  -- not really keywords
-  `antiquotName,
-  ``Lean.Parser.Command.docComment,
-  ``Lean.Parser.Command.moduleDoc]
-
-structure SemanticTokensContext where
-  beginPos  : String.Pos
-  endPos    : String.Pos
-  text      : FileMap
-  snap      : Snapshot
-
-structure SemanticTokensState where
-  data       : Array Nat
-  lastLspPos : Lsp.Position
-
--- TODO: make extensible, or don't
-def keywordSemanticTokenMap : RBMap String SemanticTokenType compare :=
-  RBMap.empty
-    |>.insert "sorry" .leanSorryLike
-    |>.insert "admit" .leanSorryLike
-    |>.insert "stop" .leanSorryLike
-    |>.insert "#exit" .leanSorryLike
-
-partial def handleSemanticTokens (beginPos endPos : String.Pos)
-    : RequestM (RequestTask SemanticTokens) := do
-  let doc ← readDoc
-  let text := doc.meta.text
-  let t := doc.cmdSnaps.waitUntil (·.endPos >= endPos)
-  mapTask t fun (snaps, _) =>
-    StateT.run' (s := { data := #[], lastLspPos := ⟨0, 0⟩ : SemanticTokensState }) do
-      for s in snaps do
-        if s.endPos <= beginPos then
-          continue
-        ReaderT.run (r := SemanticTokensContext.mk beginPos endPos text s) <|
-          go s.stx
-      return { data := (← get).data }
-where
-  go (stx : Syntax) := do
-    match stx with
-    | `($e.$id:ident)    => go e; addToken id SemanticTokenType.property
-    -- indistinguishable from next pattern
-    --| `(level|$id:ident) => addToken id SemanticTokenType.variable
-    | `($id:ident)       => highlightId id
-    | _ =>
-      if !noHighlightKinds.contains stx.getKind then
-        highlightKeyword stx
-        if stx.isOfKind choiceKind then
-          go stx[0]
-        else
-          stx.getArgs.forM go
-  highlightId (stx : Syntax) : ReaderT SemanticTokensContext (StateT SemanticTokensState RequestM) _ := do
-    if let some range := stx.getRange? then
-      let mut lastPos := range.start
-      for ti in (← read).snap.infoTree.deepestNodes (fun
-        | _, i@(Elab.Info.ofTermInfo ti), _ => match i.pos? with
-          | some ipos => if range.contains ipos then some ti else none
-          | _         => none
-        | _, _, _ => none) do
-        let pos := ti.stx.getPos?.get!
-        -- avoid reporting same position twice; the info node can occur multiple times if
-        -- e.g. the term is elaborated multiple times
-        if pos < lastPos then
-          continue
-        if let Expr.fvar fvarId .. := ti.expr then
-          if let some localDecl := ti.lctx.find? fvarId then
-            -- Recall that `isAuxDecl` is an auxiliary declaration used to elaborate a recursive definition.
-            if localDecl.isAuxDecl then
-              if ti.isBinder then
-                addToken ti.stx SemanticTokenType.function
-            else
-              addToken ti.stx SemanticTokenType.variable
-        else if ti.stx.getPos?.get! > lastPos then
-          -- any info after the start position: must be projection notation
-          addToken ti.stx SemanticTokenType.property
-          lastPos := ti.stx.getPos?.get!
-  highlightKeyword stx := do
-    if let Syntax.atom _ val := stx then
-      if (val.length > 0 && val.front.isAlpha) ||
-         -- Support for keywords of the form `#<alpha>...`
-         (val.length > 1 && val.front == '#' && (val.get ⟨1⟩).isAlpha) then
-        addToken stx (keywordSemanticTokenMap.findD val .keyword)
-  addToken stx type := do
-    let ⟨beginPos, endPos, text, _⟩ ← read
-    if let (some pos, some tailPos) := (stx.getPos?, stx.getTailPos?) then
-      if beginPos <= pos && pos < endPos then
-        let lspPos := (← get).lastLspPos
-        let lspPos' := text.utf8PosToLspPos pos
-        let deltaLine := lspPos'.line - lspPos.line
-        let deltaStart := lspPos'.character - (if lspPos'.line == lspPos.line then lspPos.character else 0)
-        let length := (text.utf8PosToLspPos tailPos).character - lspPos'.character
-        let tokenType := type.toNat
-        let tokenModifiers := 0
-        modify fun st => {
-          data := st.data ++ #[deltaLine, deltaStart, length, tokenType, tokenModifiers]
-          lastLspPos := lspPos'
-        }
-
-def handleSemanticTokensFull (_ : SemanticTokensParams)
-    : RequestM (RequestTask SemanticTokens) := do
-  handleSemanticTokens 0 ⟨1 <<< 31⟩
-
-def handleSemanticTokensRange (p : SemanticTokensRangeParams)
-    : RequestM (RequestTask SemanticTokens) := do
-  let doc ← readDoc
-  let text := doc.meta.text
-  let beginPos := text.lspPosToUtf8Pos p.range.start
-  let endPos := text.lspPosToUtf8Pos p.range.end
-  handleSemanticTokens beginPos endPos
 
 partial def handleFoldingRange (_ : FoldingRangeParams)
   : RequestM (RequestTask (Array FoldingRange)) := do
@@ -603,22 +527,68 @@ partial def handleWaitForDiagnostics (p : WaitForDiagnosticsParams)
   let t ← RequestM.asTask waitLoop
   RequestM.bindTask t fun doc? => do
     let doc ← liftExcept doc?
-    let t₁ := doc.cmdSnaps.waitAll
-    return t₁.map fun _ => pure WaitForDiagnostics.mk
+    return doc.reporter.map fun _ => pure WaitForDiagnostics.mk
 
 builtin_initialize
-  registerLspRequestHandler "textDocument/waitForDiagnostics"   WaitForDiagnosticsParams   WaitForDiagnostics      handleWaitForDiagnostics
-  registerLspRequestHandler "textDocument/completion"           CompletionParams           CompletionList          handleCompletion
-  registerLspRequestHandler "textDocument/hover"                HoverParams                (Option Hover)          handleHover
-  registerLspRequestHandler "textDocument/declaration"          TextDocumentPositionParams (Array LocationLink)    (handleDefinition GoToKind.declaration)
-  registerLspRequestHandler "textDocument/definition"           TextDocumentPositionParams (Array LocationLink)    (handleDefinition GoToKind.definition)
-  registerLspRequestHandler "textDocument/typeDefinition"       TextDocumentPositionParams (Array LocationLink)    (handleDefinition GoToKind.type)
-  registerLspRequestHandler "textDocument/documentHighlight"    DocumentHighlightParams    DocumentHighlightResult handleDocumentHighlight
-  registerLspRequestHandler "textDocument/documentSymbol"       DocumentSymbolParams       DocumentSymbolResult    handleDocumentSymbol
-  registerLspRequestHandler "textDocument/semanticTokens/full"  SemanticTokensParams       SemanticTokens          handleSemanticTokensFull
-  registerLspRequestHandler "textDocument/semanticTokens/range" SemanticTokensRangeParams  SemanticTokens          handleSemanticTokensRange
-  registerLspRequestHandler "textDocument/foldingRange"         FoldingRangeParams         (Array FoldingRange)    handleFoldingRange
-  registerLspRequestHandler "$/lean/plainGoal"                  PlainGoalParams            (Option PlainGoal)      handlePlainGoal
-  registerLspRequestHandler "$/lean/plainTermGoal"              PlainTermGoalParams        (Option PlainTermGoal)  handlePlainTermGoal
+  registerLspRequestHandler
+    "textDocument/waitForDiagnostics"
+    WaitForDiagnosticsParams
+    WaitForDiagnostics
+    handleWaitForDiagnostics
+  registerLspRequestHandler
+    "textDocument/completion"
+    CompletionParams
+    CompletionList
+    handleCompletion
+  registerLspRequestHandler
+    "completionItem/resolve"
+    CompletionItem
+    CompletionItem
+    handleCompletionItemResolve
+  registerLspRequestHandler
+    "textDocument/hover"
+    HoverParams
+    (Option Hover)
+    handleHover
+  registerLspRequestHandler
+    "textDocument/declaration"
+    TextDocumentPositionParams
+    (Array LocationLink)
+    (handleDefinition GoToKind.declaration)
+  registerLspRequestHandler
+    "textDocument/definition"
+    TextDocumentPositionParams
+    (Array LocationLink)
+    (handleDefinition GoToKind.definition)
+  registerLspRequestHandler
+    "textDocument/typeDefinition"
+    TextDocumentPositionParams
+    (Array LocationLink)
+    (handleDefinition GoToKind.type)
+  registerLspRequestHandler
+    "textDocument/documentHighlight"
+    DocumentHighlightParams
+    DocumentHighlightResult
+    handleDocumentHighlight
+  registerLspRequestHandler
+    "textDocument/documentSymbol"
+    DocumentSymbolParams
+    DocumentSymbolResult
+    handleDocumentSymbol
+  registerLspRequestHandler
+    "textDocument/foldingRange"
+    FoldingRangeParams
+    (Array FoldingRange)
+    handleFoldingRange
+  registerLspRequestHandler
+    "$/lean/plainGoal"
+    PlainGoalParams
+    (Option PlainGoal)
+    handlePlainGoal
+  registerLspRequestHandler
+    "$/lean/plainTermGoal"
+    PlainTermGoalParams
+    (Option PlainTermGoal)
+    handlePlainTermGoal
 
 end Lean.Server.FileWorker

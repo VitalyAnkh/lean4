@@ -2,8 +2,12 @@
 \#*
 .#*
 *.lock
-build
-!/src/lake/Lake/Build
+.lake
+lake-manifest.json
+/build
+/src/lakefile.toml
+/tests/lakefile.toml
+/lakefile.toml
 GPATH
 GRTAGS
 GSYMS

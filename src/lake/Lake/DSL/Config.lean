@@ -3,6 +3,7 @@ Copyright (c) 2021 Mac Malone. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Mac Malone
 -/
+prelude
 import Lean.Elab.ElabRules
 import Lake.DSL.Extensions
 
@@ -40,7 +41,7 @@ def elabDirConst : TermElab := fun stx expectedType? => do
 
 /--
 A macro that expands to the specified configuration option (or `none`,
-if not the option has not been set) during the Lakefile's elaboration.
+if the option has not been set) during the Lakefile's elaboration.
 
 Configuration arguments are set either via the Lake CLI (by the `-K` option)
 or via the `with` clause in a `require` statement.

@@ -3,6 +3,7 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Util.CollectLevelParams
 import Lean.Compiler.LCNF.Basic
 
@@ -29,11 +30,11 @@ structure State where
   /-- Counter for generating new (normalized) universe parameter names. -/
   nextIdx    : Nat := 1
   /-- Mapping from existing universe parameter names to the new ones. -/
-  map        : HashMap Name Level := {}
+  map        : Std.HashMap Name Level := {}
   /-- Parameters that have been normalized. -/
   paramNames : Array Name := #[]
 
-/-- Monad for the universe leve normalizer -/
+/-- Monad for the universe level normalizer -/
 abbrev M := StateM State
 
 /--
@@ -48,7 +49,7 @@ partial def normLevel (u : Level) : M Level := do
     | .max v w  => return u.updateMax! (← normLevel v) (← normLevel w)
     | .imax v w => return u.updateIMax! (← normLevel v) (← normLevel w)
     | .mvar _   => unreachable!
-    | .param n  => match (← get).map.find? n with
+    | .param n  => match (← get).map[n]? with
       | some u => return u
       | none   =>
         let u := Level.param <| (`u).appendIndexAfter (← get).nextIdx
@@ -138,6 +139,10 @@ mutual
     | .jmp _ args => visitArgs args
 end
 
+def visitDeclValue : DeclValue → Visitor
+  | .code c => visitCode c
+  | .extern .. => id
+
 end CollectLevelParams
 
 open Lean.CollectLevelParams
@@ -148,7 +153,7 @@ Collect universe level parameters collecting in the type, parameters, and value,
 set `decl.levelParams` with the resulting value.
 -/
 def Decl.setLevelParams (decl : Decl) : Decl :=
-  let levelParams := (visitCode decl.value ∘ visitParams decl.params ∘ visitType decl.type) {} |>.params.toList
+  let levelParams := (visitDeclValue decl.value ∘ visitParams decl.params ∘ visitType decl.type) {} |>.params.toList
   { decl with levelParams }
 
 end Lean.Compiler.LCNF

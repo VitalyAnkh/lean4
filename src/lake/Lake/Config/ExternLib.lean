@@ -3,9 +3,11 @@ Copyright (c) 2022 Mac Malone. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Mac Malone
 -/
+prelude
 import Lake.Config.Package
 
 namespace Lake
+open Lean (Name)
 
 /-- An external library -- its package plus its configuration. -/
 structure ExternLib where
@@ -18,7 +20,7 @@ structure ExternLib where
 
 /-- The external libraries of the package (as an Array). -/
 @[inline] def Package.externLibs (self : Package) : Array ExternLib :=
-  self.externLibConfigs.fold (fun a n v => a.push (⟨self, n, v⟩)) #[]
+  self.externLibConfigs.fold (fun a _ v => a.push ⟨self, _, v⟩) #[]
 
 /-- Try to find a external library in the package with the given name. -/
 @[inline] def Package.findExternLib? (name : Name) (self : Package) : Option ExternLib :=

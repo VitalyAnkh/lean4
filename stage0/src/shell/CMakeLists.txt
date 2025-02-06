@@ -1,9 +1,15 @@
-set(SRC lean.cpp)
-if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
-set(SRC ${SRC} manifest.rc)
-endif()
+add_library(leanmain STATIC lean.cpp)
+set_target_properties(leanmain PROPERTIES
+  ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/temp
+  OUTPUT_NAME leanmain)
 
-add_library(shell OBJECT ${SRC})
+# library must contain at least one non-manifest file
+# We use `CONFIGURE` instead of `WRITE` so as to avoid touching the file on each run
+file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/temp/empty.c CONTENT "")
+add_library(leanmanifest STATIC ${CMAKE_BINARY_DIR}/temp/empty.c manifest.rc)
+set_target_properties(leanmanifest PROPERTIES
+  ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/lean
+  OUTPUT_NAME leanmanifest)
 
 if(LLVM)
   if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
@@ -28,8 +34,8 @@ endif()
 
 add_custom_target(lean ALL
   WORKING_DIRECTORY ${LEAN_SOURCE_DIR}
-  DEPENDS leanshared shell
-  COMMAND $(MAKE) -f ${CMAKE_BINARY_DIR}/stdlib.make lean LEAN_SHELL="$<TARGET_OBJECTS:shell>"
+  DEPENDS leanshared leanmain
+  COMMAND $(MAKE) -f ${CMAKE_BINARY_DIR}/stdlib.make lean
   COMMAND_EXPAND_LISTS)
 
 # use executable of current stage for tests
@@ -46,8 +52,12 @@ add_test(lean_ghash2   "${CMAKE_BINARY_DIR}/bin/lean" --githash)
 add_test(lean_unknown_option bash "${LEAN_SOURCE_DIR}/cmake/check_failure.sh" "${CMAKE_BINARY_DIR}/bin/lean" "-z")
 add_test(lean_unknown_file1 bash "${LEAN_SOURCE_DIR}/cmake/check_failure.sh" "${CMAKE_BINARY_DIR}/bin/lean" "boofoo.lean")
 
-# LEANC_OPTS is necessary for macOS c++ to find its headers
-set(TEST_VARS "PATH=${LEAN_BIN}:$PATH ${LEAN_TEST_VARS} CXX='${CMAKE_CXX_COMPILER} ${LEANC_OPTS}'")
+if(${EMSCRIPTEN})
+  configure_file("${LEAN_SOURCE_DIR}/bin/lean.in" "${CMAKE_BINARY_DIR}/bin/lean")
+endif()
+
+# LEANC_OPTS in CXX is necessary for macOS c++ to find its headers
+set(TEST_VARS "PATH=${LEAN_BIN}:$PATH ${LEAN_TEST_VARS} CXX='${CMAKE_CXX_COMPILER} ${LEANC_OPTS}' LEANC_OPTS='${LEANC_OPTS}'")
 
 # LEAN TESTS
 file(GLOB LEANTESTS "${LEAN_SOURCE_DIR}/../tests/lean/*.lean")
@@ -116,8 +126,8 @@ FOREACH(T_OUT ${LEANBENCHTESTS})
   string(REPLACE ".expected.out" "" T ${T_OUT})
   GET_FILENAME_COMPONENT(T_NAME ${T} NAME)
   add_test(NAME "leanbenchtest_${T_NAME}"
-           WORKING_DIRECTORY "${LEAN_SOURCE_DIR}/../tests/bench"
-           COMMAND bash -c "${TEST_VARS} ./test_single.sh ${T_NAME}")
+            WORKING_DIRECTORY "${LEAN_SOURCE_DIR}/../tests/bench"
+            COMMAND bash -c "${TEST_VARS} ./test_single.sh ${T_NAME}")
 ENDFOREACH(T_OUT)
 
 file(GLOB LEANINTERPTESTS "${LEAN_SOURCE_DIR}/../tests/plugin/*.lean")
@@ -140,7 +150,7 @@ ENDFOREACH(T)
 # LEAN PACKAGE TESTS
 file(GLOB LEANPKGTESTS "${LEAN_SOURCE_DIR}/../tests/pkg/*")
 FOREACH(T ${LEANPKGTESTS})
-  if(IS_DIRECTORY ${T})
+  if(EXISTS ${T}/test.sh)
     GET_FILENAME_COMPONENT(T_NAME ${T} NAME)
     add_test(NAME "leanpkgtest_${T_NAME}"
             WORKING_DIRECTORY "${T}"
@@ -173,11 +183,13 @@ ENDFOREACH(T)
 # Create a lake test for each test and examples subdirectory of `lake`
 # which contains a `test.sh` file, excluding the following test(s):
 # bootstrap: too slow
+# toolchain: requires elan to download toolchain
+# online: downloads remote repositories
 file(GLOB_RECURSE LEANLAKETESTS
-  "${LEAN_SOURCE_DIR}/lake/test/test.sh"
+  "${LEAN_SOURCE_DIR}/lake/tests/test.sh"
   "${LEAN_SOURCE_DIR}/lake/examples/test.sh")
 FOREACH(T ${LEANLAKETESTS})
-  if(NOT T MATCHES ".*(lake-packages|bootstrap).*")
+  if(NOT T MATCHES ".*(lake-packages|bootstrap|toolchain|online).*")
     GET_FILENAME_COMPONENT(T_DIR ${T} DIRECTORY)
     GET_FILENAME_COMPONENT(DIR_NAME ${T_DIR} NAME)
     add_test(NAME "leanlaketest_${DIR_NAME}"

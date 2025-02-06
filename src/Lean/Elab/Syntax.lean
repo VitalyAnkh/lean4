@@ -3,6 +3,7 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Elab.Command
 import Lean.Parser.Syntax
 import Lean.Elab.Util
@@ -18,12 +19,12 @@ def expandOptPrecedence (stx : Syntax) : MacroM (Option Nat) :=
     return some (← evalPrec stx[0][1])
 
 private def mkParserSeq (ds : Array (Term × Nat)) : TermElabM (Term × Nat) := do
-  if ds.size == 0 then
+  if h₀ : ds.size = 0 then
     throwUnsupportedSyntax
-  else if ds.size == 1 then
-    pure ds[0]!
+  else if h₁ : ds.size = 1 then
+    pure ds[0]
   else
-    let mut (r, stackSum) := ds[0]!
+    let mut (r, stackSum) := ds[0]
     for (d, stackSz) in ds[1:ds.size] do
       r ← `(ParserDescr.binary `andthen $r $d)
       stackSum := stackSum + stackSz
@@ -79,7 +80,7 @@ def checkLeftRec (stx : Syntax) : ToParserDescrM Bool := do
   markAsTrailingParser (prec?.getD 0)
   return true
 
-def elabParserName? (stx : Syntax.Ident) : TermElabM (Option Parser.ParserName) := do
+def elabParserName? (stx : Syntax.Ident) : TermElabM (Option Parser.ParserResolution) := do
   match ← Parser.resolveParserName stx with
   | [n@(.category cat)] =>
     addCategoryInfo stx cat
@@ -87,10 +88,12 @@ def elabParserName? (stx : Syntax.Ident) : TermElabM (Option Parser.ParserName) 
   | [n@(.parser parser _)] =>
     addTermInfo' stx (Lean.mkConst parser)
     return n
+  | [n@(.alias _)] =>
+    return n
   | _::_::_ => throwErrorAt stx "ambiguous parser {stx}"
   | [] => return none
 
-def elabParserName (stx : Syntax.Ident) : TermElabM Parser.ParserName := do
+def elabParserName (stx : Syntax.Ident) : TermElabM Parser.ParserResolution := do
   match ← elabParserName? stx with
   | some n => return n
   | none => throwErrorAt stx "unknown parser {stx}"
@@ -139,11 +142,11 @@ where
     let args := stx.getArgs
     if (← checkLeftRec stx[0]) then
       if args.size == 1 then throwErrorAt stx "invalid atomic left recursive syntax"
-      let args := args.eraseIdx 0
+      let args := args.eraseIdxIfInBounds 0
       let args ← args.mapM fun arg => withNestedParser do process arg
       mkParserSeq args
     else
-      let args ← args.mapIdxM fun i arg => withReader (fun ctx => { ctx with first := ctx.first && i.val == 0 }) do process arg
+      let args ← args.mapIdxM fun i arg => withReader (fun ctx => { ctx with first := ctx.first && i == 0 }) do process arg
       mkParserSeq args
 
   ensureNoPrec (stx : Syntax) :=
@@ -172,7 +175,7 @@ where
           | `(stx| $sym:str) => pure sym
           | _ => return arg'
         let sym := sym.getString
-        return (← `(ParserDescr.nodeWithAntiquot $(quote sym) $(quote (`token ++ sym)) $(arg'.1)), 1)
+        return (← `(ParserDescr.nodeWithAntiquot $(quote sym) $(quote (Name.str `token sym)) $(arg'.1)), 1)
     else
       pure args'
     let (args', stackSz) := if let some stackSz := info.stackSz? then
@@ -193,12 +196,6 @@ where
   processNullaryOrCat (stx : Syntax) := do
     let ident := stx[0]
     let id := ident.getId.eraseMacroScopes
-    -- run when parser is neither a decl nor a cat
-    let default := do
-      if (← Parser.isParserAlias id) then
-        ensureNoPrec stx
-        return (← processAlias ident #[])
-      throwError "unknown parser declaration/category/alias '{id}'"
     match (← elabParserName? ident) with
     | some (.parser c (isDescr := true)) =>
       ensureNoPrec stx
@@ -208,14 +205,18 @@ where
     | some (.parser c (isDescr := false)) =>
       if (← Parser.getParserAliasInfo id).declName == c then
         -- prefer parser alias over base declaration because it has more metadata, #2249
-        return (← default)
+        ensureNoPrec stx
+        return (← processAlias ident #[])
       ensureNoPrec stx
       -- as usual, we assume that people using `Parser` know what they are doing
       let stackSz := 1
       return (← `(ParserDescr.parser $(quote c)), stackSz)
     | some (.category _) =>
       processParserCategory stx
-    | none => default
+    | some (.alias _) =>
+      ensureNoPrec stx
+      processAlias ident #[]
+    | none => throwError "unknown parser declaration/category/alias '{id}'"
 
   processSepBy (stx : Syntax) := do
     let p ← ensureUnaryOutput <$> withNestedParser do process stx[1]
@@ -232,11 +233,15 @@ where
     return (← `((with_annotate_term $(stx[0]) @ParserDescr.sepBy1) $p $sep $psep $(quote allowTrailingSep)), 1)
 
   isValidAtom (s : String) : Bool :=
+    -- Pretty-printing instructions shouldn't affect validity
+    let s := s.trim
     !s.isEmpty &&
-    s.front != '\'' &&
+    (s.front != '\'' || "''".isPrefixOf s) &&
     s.front != '\"' &&
+    !(isIdBeginEscape s.front) &&
     !(s.front == '`' && (s.endPos == ⟨1⟩ || isIdFirst (s.get ⟨1⟩) || isIdBeginEscape (s.get ⟨1⟩))) &&
-    !s.front.isDigit
+    !s.front.isDigit &&
+    !(s.any Char.isWhitespace)
 
   processAtom (stx : Syntax) := do
     match stx[0].isStrLit? with
@@ -381,7 +386,6 @@ def addMacroScopeIfLocal [MonadQuotation m] [Monad m] (name : Name) (attrKind : 
   let name ← match name? with
     | some name => pure name.getId
     | none => addMacroScopeIfLocal (← liftMacroM <| mkNameFromParserSyntax cat syntaxParser) attrKind
-  trace[Meta.debug] "name: {name}"
   let prio ← liftMacroM <| evalOptPrio prio?
   let idRef := (name?.map (·.raw)).getD tk
   let stxNodeKind := (← getCurrNamespace) ++ name
@@ -443,6 +447,6 @@ def strLitToPattern (stx: Syntax) : MacroM Syntax :=
   | none     => Macro.throwUnsupported
 
 builtin_initialize
-  registerTraceClass `Elab.syntax
+  registerTraceClass `Elab.defaultInstance
 
 end Lean.Elab.Command

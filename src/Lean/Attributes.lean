@@ -3,6 +3,7 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.CoreM
 import Lean.MonadEnv
 
@@ -52,7 +53,7 @@ structure AttributeImpl extends AttributeImplCore where
   erase (decl : Name) : AttrM Unit := throwError "attribute cannot be erased"
   deriving Inhabited
 
-builtin_initialize attributeMapRef : IO.Ref (PersistentHashMap Name AttributeImpl) ← IO.mkRef {}
+builtin_initialize attributeMapRef : IO.Ref (Std.HashMap Name AttributeImpl) ← IO.mkRef {}
 
 /-- Low level attribute registration function. -/
 def registerBuiltinAttribute (attr : AttributeImpl) : IO Unit := do
@@ -66,13 +67,11 @@ def registerBuiltinAttribute (attr : AttributeImpl) : IO Unit := do
   Helper methods for decoding the parameters of builtin attributes that are defined before `Lean.Parser`.
   We have the following ones:
   ```
-  @[builtin_attr_parser] def simple     := leading_parser ident >> optional ident >> optional priorityParser
-  /- We can't use `simple` for `class`, `instance`, `export` and `macro` because they are  keywords. -/
-  @[builtin_attr_parser] def «class»    := leading_parser "class"
-  @[builtin_attr_parser] def «instance» := leading_parser "instance" >> optional priorityParser
+  @[builtin_attr_parser] def simple     := leading_parser ident >> optional (ppSpace >> (priorityParser <|> ident))
   @[builtin_attr_parser] def «macro»    := leading_parser "macro " >> ident
+  @[builtin_attr_parser] def «export»   := leading_parser "export " >> ident
   ```
-  Note that we need the parsers for `class`, `instance`, and `macros` because they are keywords.
+  Note that we need the parsers for `class`, `instance`, `export` and `macros` because they are keywords.
 -/
 
 def Attribute.Builtin.ensureNoArgs (stx : Syntax) : AttrM Unit := do
@@ -182,12 +181,11 @@ structure ParametricAttribute (α : Type) where
   deriving Inhabited
 
 structure ParametricAttributeImpl (α : Type) extends AttributeImplCore where
-  /-- This is used as the target for go-to-definition queries for simple attributes -/
   getParam : Name → Syntax → AttrM α
   afterSet : Name → α → AttrM Unit := fun _ _ _ => pure ()
   afterImport : Array (Array (Name × α)) → ImportM Unit := fun _ => pure ()
 
-def registerParametricAttribute [Inhabited α] (impl : ParametricAttributeImpl α) : IO (ParametricAttribute α) := do
+def registerParametricAttribute (impl : ParametricAttributeImpl α) : IO (ParametricAttribute α) := do
   let ext : PersistentEnvExtension (Name × α) (Name × α) (NameMap α) ← registerPersistentEnvExtension {
     name            := impl.ref
     mkInitial       := pure {}
@@ -241,7 +239,7 @@ structure EnumAttributes (α : Type) where
   ext   : PersistentEnvExtension (Name × α) (Name × α) (NameMap α)
   deriving Inhabited
 
-def registerEnumAttributes [Inhabited α] (attrDescrs : List (Name × String × α))
+def registerEnumAttributes (attrDescrs : List (Name × String × α))
     (validate : Name → α → AttrM Unit := fun _ _ => pure ())
     (applicationTime := AttributeApplicationTime.afterTypeChecking)
     (ref : Name := by exact decl_name%) : IO (EnumAttributes α) := do
@@ -298,7 +296,7 @@ end EnumAttributes
 -/
 
 abbrev AttributeImplBuilder := Name → List DataValue → Except String AttributeImpl
-abbrev AttributeImplBuilderTable := HashMap Name AttributeImplBuilder
+abbrev AttributeImplBuilderTable := Std.HashMap Name AttributeImplBuilder
 
 builtin_initialize attributeImplBuilderTableRef : IO.Ref AttributeImplBuilderTable ← IO.mkRef {}
 
@@ -307,19 +305,20 @@ def registerAttributeImplBuilder (builderId : Name) (builder : AttributeImplBuil
   if table.contains builderId then throw (IO.userError ("attribute implementation builder '" ++ toString builderId ++ "' has already been declared"))
   attributeImplBuilderTableRef.modify fun table => table.insert builderId builder
 
-def mkAttributeImplOfBuilder (builderId ref : Name) (args : List DataValue) : IO AttributeImpl := do
-  let table ← attributeImplBuilderTableRef.get
-  match table.find? builderId with
-  | none         => throw (IO.userError ("unknown attribute implementation builder '" ++ toString builderId ++ "'"))
-  | some builder => IO.ofExcept <| builder ref args
+structure AttributeExtensionOLeanEntry where
+  builderId : Name
+  ref : Name
+  args : List DataValue
 
-inductive AttributeExtensionOLeanEntry where
-  | decl (declName : Name) -- `declName` has type `AttributeImpl`
-  | builder (builderId ref : Name) (args : List DataValue)
+def mkAttributeImplOfEntry (e : AttributeExtensionOLeanEntry) : IO AttributeImpl := do
+  let table ← attributeImplBuilderTableRef.get
+  match table[e.builderId]? with
+  | none         => throw (IO.userError ("unknown attribute implementation builder '" ++ toString e.builderId ++ "'"))
+  | some builder => IO.ofExcept <| builder e.ref e.args
 
 structure AttributeExtensionState where
   newEntries : List AttributeExtensionOLeanEntry := []
-  map        : PersistentHashMap Name AttributeImpl
+  map        : Std.HashMap Name AttributeImpl
   deriving Inhabited
 
 abbrev AttributeExtension := PersistentEnvExtension AttributeExtensionOLeanEntry (AttributeExtensionOLeanEntry × AttributeImpl) AttributeExtensionState
@@ -330,7 +329,7 @@ private def AttributeExtension.mkInitial : IO AttributeExtensionState := do
 
 unsafe def mkAttributeImplOfConstantUnsafe (env : Environment) (opts : Options) (declName : Name) : Except String AttributeImpl :=
   match env.find? declName with
-  | none      => throw ("unknow constant '" ++ toString declName ++ "'")
+  | none      => throw ("unknown constant '" ++ toString declName ++ "'")
   | some info =>
     match info.type with
     | Expr.const `Lean.AttributeImpl _ => env.evalConst AttributeImpl opts declName
@@ -339,19 +338,13 @@ unsafe def mkAttributeImplOfConstantUnsafe (env : Environment) (opts : Options) 
 @[implemented_by mkAttributeImplOfConstantUnsafe]
 opaque mkAttributeImplOfConstant (env : Environment) (opts : Options) (declName : Name) : Except String AttributeImpl
 
-def mkAttributeImplOfEntry (env : Environment) (opts : Options) (e : AttributeExtensionOLeanEntry) : IO AttributeImpl :=
-  match e with
-  | .decl declName              => IO.ofExcept <| mkAttributeImplOfConstant env opts declName
-  | .builder builderId ref args => mkAttributeImplOfBuilder builderId ref args
-
 private def AttributeExtension.addImported (es : Array (Array AttributeExtensionOLeanEntry)) : ImportM AttributeExtensionState := do
-  let ctx ← read
   let map ← attributeMapRef.get
   let map ← es.foldlM
     (fun map entries =>
       entries.foldlM
-        (fun (map : PersistentHashMap Name AttributeImpl) entry => do
-          let attrImpl ← mkAttributeImplOfEntry ctx.env ctx.opts entry
+        (fun (map : Std.HashMap Name AttributeImpl) entry => do
+          let attrImpl ← mkAttributeImplOfEntry entry
           return map.insert attrImpl.name attrImpl)
         map)
     map
@@ -376,11 +369,11 @@ def isBuiltinAttribute (n : Name) : IO Bool := do
 
 /-- Return the name of all registered attributes. -/
 def getBuiltinAttributeNames : IO (List Name) :=
-  return (← attributeMapRef.get).foldl (init := []) fun r n _ => n::r
+  return (← attributeMapRef.get).fold (init := []) fun r n _ => n::r
 
 def getBuiltinAttributeImpl (attrName : Name) : IO AttributeImpl := do
   let m ← attributeMapRef.get
-  match m.find? attrName with
+  match m[attrName]? with
   | some attr => pure attr
   | none      => throw (IO.userError ("unknown attribute '" ++ toString attrName ++ "'"))
 
@@ -394,27 +387,21 @@ def isAttribute (env : Environment) (attrName : Name) : Bool :=
 
 def getAttributeNames (env : Environment) : List Name :=
   let m := (attributeExtension.getState env).map
-  m.foldl (fun r n _ => n::r) []
+  m.fold (fun r n _ => n::r) []
 
 def getAttributeImpl (env : Environment) (attrName : Name) : Except String AttributeImpl :=
   let m := (attributeExtension.getState env).map
-  match m.find? attrName with
+  match m[attrName]? with
   | some attr => pure attr
   | none      => throw ("unknown attribute '" ++ toString attrName ++ "'")
 
-def registerAttributeOfDecl (env : Environment) (opts : Options) (attrDeclName : Name) : Except String Environment := do
-  let attrImpl ← mkAttributeImplOfConstant env opts attrDeclName
-  if isAttribute env attrImpl.name then
-    throw ("invalid builtin attribute declaration, '" ++ toString attrImpl.name ++ "' has already been used")
-  else
-    return attributeExtension.addEntry env (.decl attrDeclName, attrImpl)
-
 def registerAttributeOfBuilder (env : Environment) (builderId ref : Name) (args : List DataValue) : IO Environment := do
-  let attrImpl ← mkAttributeImplOfBuilder builderId ref args
+  let entry := {builderId, ref, args}
+  let attrImpl ← mkAttributeImplOfEntry entry
   if isAttribute env attrImpl.name then
     throw (IO.userError ("invalid builtin attribute declaration, '" ++ toString attrImpl.name ++ "' has already been used"))
   else
-    return attributeExtension.addEntry env (.builder builderId ref args, attrImpl)
+    return attributeExtension.addEntry env (entry, attrImpl)
 
 def Attribute.add (declName : Name) (attrName : Name) (stx : Syntax) (kind := AttributeKind.global) : AttrM Unit := do
   let attr ← ofExcept <| getAttributeImpl (← getEnv) attrName
@@ -429,7 +416,7 @@ def Attribute.erase (declName : Name) (attrName : Name) : AttrM Unit := do
 def updateEnvAttributesImpl (env : Environment) : IO Environment := do
   let map ← attributeMapRef.get
   let s := attributeExtension.getState env
-  let s := map.foldl (init := s) fun s attrName attrImpl =>
+  let s := map.fold (init := s) fun s attrName attrImpl =>
     if s.map.contains attrName then
       s
     else

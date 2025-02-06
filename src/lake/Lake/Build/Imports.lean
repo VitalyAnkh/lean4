@@ -3,68 +3,40 @@ Copyright (c) 2022 Mac Malone. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Mac Malone
 -/
-import Lake.Build.Index
+prelude
+import Lake.Build.Module
 
 /-!
-Definitions to support `lake print-paths` builds.
+Definitions to support `lake setup-file` builds.
 -/
 
 open System
 namespace Lake
 
 /--
-Construct an `Array` of `Module`s for the workspace-local modules of
-a `List` of import strings.
+Builds an `Array` of module imports for a Lean file.
+Used by `lake setup-file` to build modules for the Lean server and
+by `lake lean` to build the imports of a file.
+Returns the set of module dynlibs built (so they can be loaded by Lean).
 -/
-def Workspace.processImportList
-(imports : List String) (self : Workspace) : Array Module := Id.run do
-  let mut localImports := #[]
-  for imp in imports do
-    if let some mod := self.findModule? imp.toName then
-      localImports := localImports.push mod
-  return localImports
-
-/--
-Recursively build a set of imported modules and return their build jobs,
-the build jobs of their precompiled modules and the build jobs of said modules'
-external libraries.
--/
-def recBuildImports (imports : Array Module)
-: IndexBuildM (Array (BuildJob Unit) × Array (BuildJob Dynlib) × Array (BuildJob Dynlib)) := do
-  let mut modJobs := #[]
-  let mut precompileImports := OrdModuleSet.empty
-  for mod in imports do
-    if mod.shouldPrecompile then
-      precompileImports := precompileImports.appendArray (← mod.transImports.fetch) |>.insert mod
-    else
-      precompileImports := precompileImports.appendArray (← mod.precompileImports.fetch)
-    modJobs := modJobs.push <| ← mod.leanBin.fetch
-  let pkgs := precompileImports.foldl (·.insert ·.pkg) OrdPackageSet.empty |>.toArray
-  let externJobs ← pkgs.concatMapM (·.externLibs.mapM (·.dynlib.fetch))
-  let precompileJobs ← precompileImports.toArray.mapM (·.dynlib.fetch)
-  return (modJobs, precompileJobs, externJobs)
-
-/--
-Builds the workspace-local modules of list of imports.
-Used by `lake print-paths` to build modules for the Lean server.
-Returns the set of module dynlibs built (so they can be loaded by the server).
-
-Builds only module `.olean` and `.ilean` files if the package is configured
-as "Lean-only". Otherwise, also builds `.c` files.
--/
-def buildImportsAndDeps (imports : List String) : BuildM (Array FilePath) := do
-  let ws ← getWorkspace
+def buildImportsAndDeps (leanFile : FilePath) (imports : Array Module) : FetchM (Job (Array FilePath)) := do
+  withRegisterJob s!"imports ({leanFile})" do
   if imports.isEmpty then
     -- build the package's (and its dependencies') `extraDepTarget`
-    ws.root.extraDep.build >>= (·.materialize)
-    return #[]
+    (← getRootPackage).extraDep.fetch <&> (·.map fun _ => #[])
   else
     -- build local imports from list
-    let mods := ws.processImportList imports
-    let (modJobs, precompileJobs, externLibJobs) ←
-      recBuildImports mods |>.run.run
-    modJobs.forM (·.await)
-    let modLibs ← precompileJobs.mapM (·.await <&> (·.path))
-    let externLibs ← externLibJobs.mapM (·.await <&> (·.path))
-    -- NOTE: Lean wants the external library symbols before module symbols
-    return externLibs ++ modLibs
+    let modJob := Job.mixArray <| ← imports.mapM (·.olean.fetch)
+    let precompileImports ← (← computePrecompileImportsAux leanFile imports).await
+    let pkgs := precompileImports.foldl (·.insert ·.pkg) OrdPackageSet.empty |>.toArray
+    let externLibJob := Job.collectArray <| ←
+      pkgs.flatMapM (·.externLibs.mapM (·.dynlib.fetch))
+    let precompileJob := Job.collectArray <| ←
+      precompileImports.mapM (·.dynlib.fetch)
+    let job ←
+      modJob.bindM fun _ =>
+      precompileJob.bindM fun modLibs =>
+      externLibJob.mapM fun externLibs => do
+        -- NOTE: Lean wants the external library symbols before module symbols
+        return (externLibs ++ modLibs).map (·.path)
+    return job

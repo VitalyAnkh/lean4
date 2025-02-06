@@ -3,6 +3,7 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Meta.GlobalInstances
 
 namespace Lean.Meta
@@ -21,14 +22,15 @@ private def canUnfoldDefault (cfg : Config) (info : ConstantInfo) : CoreM Bool :
 
 def canUnfold (info : ConstantInfo) : MetaM Bool := do
   let ctx ← read
+  let cfg ← getConfig
   if let some f := ctx.canUnfold? then
-    f ctx.config info
+    f cfg info
   else
-    canUnfoldDefault ctx.config info
+    canUnfoldDefault cfg info
 
 /--
 Look up a constant name, returning the `ConstantInfo`
-if it should be unfolded at the current reducibility settings,
+if it is a def/theorem that should be unfolded at the current reducibility settings,
 or `none` otherwise.
 
 This is part of the implementation of `whnf`.
@@ -38,7 +40,7 @@ def getUnfoldableConst? (constName : Name) : MetaM (Option ConstantInfo) := do
   match (← getEnv).find? constName with
   | some (info@(.thmInfo _))  => getTheoremInfo info
   | some (info@(.defnInfo _)) => if (← canUnfold info) then return info else return none
-  | some info                 => return some info
+  | some _                    => return none
   | none                      => throwUnknownConstant constName
 
 /--
@@ -48,7 +50,6 @@ def getUnfoldableConstNoEx? (constName : Name) : MetaM (Option ConstantInfo) := 
   match (← getEnv).find? constName with
   | some (info@(.thmInfo _))  => getTheoremInfo info
   | some (info@(.defnInfo _)) => if (← canUnfold info) then return info else return none
-  | some info                 => return some info
-  | none                      => return none
+  | _                         => return none
 
 end Meta

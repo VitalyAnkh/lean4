@@ -3,6 +3,7 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura, Sebastian Ullrich
 -/
+prelude
 import Lean.Util.CollectFVars
 import Lean.Meta.Basic
 
@@ -28,7 +29,7 @@ where
     let s ← getThe CollectFVars.State
     let i ← get
     if h : i < s.fvarIds.size then
-      let r := s.fvarIds.get ⟨i, h⟩
+      let r := s.fvarIds[i]
       modify (· + 1)
       return some r
     else

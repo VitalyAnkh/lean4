@@ -3,6 +3,7 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Compiler.LCNF.Basic
 import Lean.Compiler.LCNF.Types
 
@@ -61,7 +62,7 @@ structure State where
   Whenever there is function application `f a₁ ... aₙ`, where `f` is in `decls`, `f` is not `main`, and
   we visit with the abstract values assigned to `aᵢ`, but first we record the visit here.
   -/
-  visited : HashSet (Name × Array AbsValue) := {}
+  visited : Std.HashSet (Name × Array AbsValue) := {}
   /--
   Bitmask containing the result, i.e., which parameters of `main` are fixed.
   We initialize it with `true` everywhere.
@@ -140,8 +141,9 @@ partial def evalApp (declName : Name) (args : Array Arg) : FixParamM Unit := do
       let key := (declName, values)
       unless (← get).visited.contains key do
         modify fun s => { s with visited := s.visited.insert key }
-        let assignment := mkAssignment decl values
-        withReader (fun ctx => { ctx with assignment }) <| evalCode decl.value
+        decl.value.forCodeM fun c =>
+          let assignment := mkAssignment decl values
+          withReader (fun ctx => { ctx with assignment }) <| evalCode c
 
 end
 
@@ -168,8 +170,12 @@ def mkFixedParamsMap (decls : Array Decl) : NameMap (Array Bool) := Id.run do
     let values := mkInitialValues decl.params.size
     let assignment := mkAssignment decl values
     let fixed := Array.mkArray decl.params.size true
-    match evalCode decl.value |>.run { main := decl, decls, assignment } |>.run { fixed } with
-    | .ok _ s | .error _ s => result := result.insert decl.name s.fixed
+    match decl.value with
+    | .code c =>
+      match evalCode c |>.run { main := decl, decls, assignment } |>.run { fixed } with
+      | .ok _ s | .error _ s => result := result.insert decl.name s.fixed
+    | .extern .. =>
+      result := result.insert decl.name fixed
   return result
 
 end Lean.Compiler.LCNF

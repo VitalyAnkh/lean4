@@ -8,11 +8,49 @@ import Init.Core
 
 universe u v w
 
+/--
+A `ForIn'` instance, which handles `for h : x in c do`,
+can also handle `for x in x do` by ignoring `h`, and so provides a `ForIn` instance.
+
+Note that this instance will cause a potentially non-defeq duplication if both `ForIn` and `ForIn'`
+instances are provided for the same type.
+-/
+-- We set the priority to 500 so it is below the default,
+-- but still above the low priority instance from `Stream`.
+instance (priority := 500) instForInOfForIn' [ForIn' m ρ α d] : ForIn m ρ α where
+  forIn x b f := forIn' x b fun a _ => f a
+
+@[simp] theorem forIn'_eq_forIn [d : Membership α ρ] [ForIn' m ρ α d] {β} [Monad m] (x : ρ) (b : β)
+    (f : (a : α) → a ∈ x → β → m (ForInStep β)) (g : (a : α) → β → m (ForInStep β))
+    (h : ∀ a m b, f a m b = g a b) :
+    forIn' x b f = forIn x b g := by
+  simp [instForInOfForIn']
+  congr
+  apply funext
+  intro a
+  apply funext
+  intro m
+  apply funext
+  intro b
+  simp [h]
+  rfl
+
+/-- Extract the value from a `ForInStep`, ignoring whether it is `done` or `yield`. -/
+def ForInStep.value (x : ForInStep α) : α :=
+  match x with
+  | ForInStep.done b => b
+  | ForInStep.yield b => b
+
+@[simp] theorem ForInStep.value_done (b : β) : (ForInStep.done b).value = b := rfl
+@[simp] theorem ForInStep.value_yield (b : β) : (ForInStep.yield b).value = b := rfl
+
 @[reducible]
 def Functor.mapRev {f : Type u → Type v} [Functor f] {α β : Type u} : f α → (α → β) → f β :=
   fun a f => f <$> a
 
 infixr:100 " <&> " => Functor.mapRev
+
+recommended_spelling "mapRev" for "<&>" in [Functor.mapRev, «term_<&>_»]
 
 @[always_inline, inline]
 def Functor.discard {f : Type u → Type v} {α : Type u} [Functor f] (x : f α) : f PUnit :=
@@ -20,8 +58,29 @@ def Functor.discard {f : Type u → Type v} {α : Type u} [Functor f] (x : f α)
 
 export Functor (discard)
 
+/--
+An `Alternative` functor is an `Applicative` functor that can "fail" or be "empty"
+and a binary operation `<|>` that “collects values” or finds the “left-most success”.
+
+Important instances include
+* `Option`, where `failure := none` and `<|>` returns the left-most `some`.
+* Parser combinators typically provide an `Applicative` instance for error-handling and
+  backtracking.
+
+Error recovery and state can interact subtly. For example, the implementation of `Alternative` for `OptionT (StateT σ Id)` keeps modifications made to the state while recovering from failure, while `StateT σ (OptionT Id)` discards them.
+-/
+-- NB: List instance is in mathlib. Once upstreamed, add
+-- * `List`, where `failure` is the empty list and `<|>` concatenates.
 class Alternative (f : Type u → Type v) extends Applicative f : Type (max (u+1) v) where
+  /--
+  Produces an empty collection or recoverable failure.  The `<|>` operator collects values or recovers
+  from failures. See `Alternative` for more details.
+  -/
   failure : {α : Type u} → f α
+  /--
+  Depending on the `Alternative` instance, collects values or recovers from `failure`s by
+  returning the leftmost success. Can be written using the `<|>` operator syntax.
+  -/
   orElse  : {α : Type u} → f α → (Unit → f α) → f α
 
 instance (f : Type u → Type v) (α : Type u) [Alternative f] : OrElse (f α) := ⟨Alternative.orElse⟩
@@ -30,9 +89,15 @@ variable {f : Type u → Type v} [Alternative f] {α : Type u}
 
 export Alternative (failure)
 
+/--
+If the proposition `p` is true, does nothing, else fails (using `failure`).
+-/
 @[always_inline, inline] def guard {f : Type → Type v} [Alternative f] (p : Prop) [Decidable p] : f Unit :=
   if p then pure () else failure
 
+/--
+Returns `some x` if `f` succeeds with value `x`, else returns `none`.
+-/
 @[always_inline, inline] def optional (x : f α) : f (Option α) :=
   some <$> x <|> pure none
 
@@ -57,6 +122,8 @@ instance : ToBool Bool where
 
 infixr:30 " <||> " => orM
 
+recommended_spelling "orM" for "<||>" in [orM, «term_<||>_»]
+
 @[macro_inline] def andM {m : Type u → Type v} {β : Type u} [Monad m] [ToBool β] (x y : m β) : m β := do
   let b ← x
   match toBool b with
@@ -64,6 +131,8 @@ infixr:30 " <||> " => orM
   | false => pure b
 
 infixr:35 " <&&> " => andM
+
+recommended_spelling "andM" for "<&&>" in [andM, «term_<&&>_»]
 
 @[macro_inline] def notM {m : Type → Type v} [Applicative m] (x : m Bool) : m Bool :=
   not <$> x
@@ -252,3 +321,7 @@ def Bind.bindLeft [Bind m] (f : α → m β) (ma : m α) : m β :=
 @[inherit_doc] infixr:55 " >=> " => Bind.kleisliRight
 @[inherit_doc] infixr:55 " <=< " => Bind.kleisliLeft
 @[inherit_doc] infixr:55 " =<< " => Bind.bindLeft
+
+recommended_spelling "kleisliRight" for ">=>" in [Bind.kleisliRight, «term_>=>_»]
+recommended_spelling "kleisliLeft" for "<=<" in [Bind.kleisliLeft, «term_<=<_»]
+recommended_spelling "bindLeft" for "=<<" in [Bind.bindLeft, «term_=<<_»]

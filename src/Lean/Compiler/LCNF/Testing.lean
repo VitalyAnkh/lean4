@@ -3,6 +3,7 @@ Copyright (c) 2022 Henrik Böving. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Henrik Böving
 -/
+prelude
 import Lean.Compiler.LCNF.PassManager
 import Lean.Compiler.LCNF.PrettyPrinter
 
@@ -234,12 +235,17 @@ Assert that the pass under test produces `Decl`s that do not contain
 `Expr.const constName` in their `Code.let` values anymore.
 -/
 def assertDoesNotContainConstAfter (constName : Name) (msg : String) : TestInstaller :=
-  assertForEachDeclAfterEachOccurrence (fun _ decl => !decl.value.containsConst constName) msg
+  assertForEachDeclAfterEachOccurrence
+    fun _ decl =>
+      match decl.value with
+      | .code c => !c.containsConst constName
+      | .extern .. => true
+    msg
 
 def assertNoFun : TestInstaller :=
   assertAfter do
     for decl in (← getDecls) do
-      decl.value.forM fun
+      decl.value.forCodeM fun
         | .fun .. => throwError "declaration `{decl.name}` contains a local function declaration"
         | _ => return ()
 

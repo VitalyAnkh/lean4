@@ -3,6 +3,8 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
+import Init.Data.List.BasicAux
 import Lean.Expr
 import Lean.Environment
 import Lean.Attributes
@@ -16,6 +18,7 @@ inductive ExternEntry where
   | inline   (backend : Name) (pattern : String)
   | standard (backend : Name) (fn : String)
   | foreign  (backend : Name) (fn : String)
+  deriving BEq, Hashable
 
 /--
 - `@[extern]`
@@ -34,7 +37,7 @@ inductive ExternEntry where
 structure ExternAttrData where
   arity?   : Option Nat := none
   entries  : List ExternEntry
-  deriving Inhabited
+  deriving Inhabited, BEq, Hashable
 
 -- def externEntry := leading_parser optional ident >> optional (nonReservedSymbol "inline ") >> strLit
 -- @[builtin_attr_parser] def extern     := leading_parser nonReservedSymbol "extern " >> optional numLit >> many externEntry
@@ -64,12 +67,13 @@ builtin_initialize externAttr : ParametricAttribute ExternAttrData ←
     descr := "builtin and foreign functions"
     getParam := fun _ stx => syntaxToExternAttrData stx
     afterSet := fun declName _ => do
-      let mut env ← getEnv
-      if env.isProjectionFn declName || env.isConstructor declName then do
-        env ← ofExcept <| addExtern env declName
+      let env ← getEnv
+      if env.isProjectionFn declName || env.isConstructor declName then
+        if let some (.thmInfo ..) := env.find? declName then
+          -- We should not mark theorems as extern
+          return ()
+        let env ← ofExcept <| addExtern env declName
         setEnv env
-      else
-        pure ()
   }
 
 @[export lean_get_extern_attr_data]

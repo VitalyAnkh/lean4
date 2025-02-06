@@ -3,6 +3,9 @@ Copyright (c) 2021 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
+import Init.Data.List.BasicAux
+import Lean.AddDecl
 import Lean.Meta.AppBuilder
 import Lean.Meta.Instances
 
@@ -13,8 +16,8 @@ private partial def mkLocalInstances (params : Array Expr) (k : Array Expr → M
   loop 0 #[]
 where
   loop (i : Nat) (insts : Array Expr) : MetaM α := do
-    if i < params.size then
-      let param := params[i]!
+    if h : i < params.size then
+      let param := params[i]
       let paramType ← inferType param
       let instType? ← forallTelescopeReducing paramType fun xs _ => do
         let type := mkAppN param xs
@@ -64,8 +67,8 @@ private partial def mkSizeOfMotives (motiveFVars : Array Expr) (k : Array Expr �
   loop 0 #[]
 where
   loop (i : Nat) (motives : Array Expr) : MetaM α := do
-    if i < motiveFVars.size then
-      let type ← inferType motiveFVars[i]!
+    if h : i < motiveFVars.size then
+      let type ← inferType motiveFVars[i]
       let motive ← forallTelescopeReducing type fun xs _ => do
         mkLambdaFVars xs <| mkConst ``Nat
       trace[Meta.sizeOf] "motive: {motive}"
@@ -161,8 +164,6 @@ partial def mkSizeOfFn (recName : Name) (declName : Name): MetaM Unit := do
 -/
 def mkSizeOfFns (typeName : Name) : MetaM (Array Name × NameMap Name) := do
   let indInfo ← getConstInfoInduct typeName
-  let recInfo ← getConstInfoRec (mkRecName typeName)
-  let numExtra := recInfo.numMotives - indInfo.all.length -- numExtra > 0 for nested inductive types
   let mut result := #[]
   let baseName := indInfo.all.head! ++ `_sizeOf -- we use the first inductive type as the base name for `sizeOf` functions
   let mut i := 1
@@ -174,7 +175,7 @@ def mkSizeOfFns (typeName : Name) : MetaM (Array Name × NameMap Name) := do
     recMap := recMap.insert recName sizeOfName
     result := result.push sizeOfName
     i := i + 1
-  for j in [:numExtra] do
+  for j in [:indInfo.numNested] do
     let recName := (mkRecName indInfo.all.head!).appendIndexAfter (j+1)
     let sizeOfName := baseName.appendIndexAfter i
     mkSizeOfFn recName sizeOfName
@@ -297,7 +298,7 @@ mutual
         for motiveFVar in motiveFVars do
           let motive ← forallTelescopeReducing (← inferType motiveFVar) fun ys _ => do
             let lhs ← mkSizeOf ys
-            let rhs ← mkAppM ``SizeOf.sizeOf #[ys.back]
+            let rhs ← mkAppM ``SizeOf.sizeOf #[ys.back!]
             mkLambdaFVars ys (← mkEq lhs rhs)
           r := mkApp r motive
         forallBoundedTelescope (← inferType r) recInfo.numMinors fun minorFVars _ => do
@@ -511,5 +512,9 @@ def mkSizeOfInstances (typeName : Name) : MetaM Unit := do
 
 builtin_initialize
   registerTraceClass `Meta.sizeOf
+  registerTraceClass `Meta.sizeOf.minor
+  registerTraceClass `Meta.sizeOf.minor.step
+  registerTraceClass `Meta.sizeOf.aux
+  registerTraceClass `Meta.sizeOf.loop
 
 end Lean.Meta

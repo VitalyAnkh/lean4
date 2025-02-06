@@ -3,6 +3,7 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Meta.Basic
 
 namespace Lean
@@ -20,6 +21,7 @@ inductive TransformStep where
   For `pre`, this means visiting the children of the expression.
   For `post`, this is equivalent to returning `done`. -/
   | continue (e? : Option Expr := none)
+  deriving Inhabited, Repr
 
 namespace Core
 
@@ -55,13 +57,13 @@ partial def transform {m} [Monad m] [MonadLiftT CoreM m] [MonadControlT CoreM m]
       | .continue e? =>
         let e := e?.getD e
         match e with
-        | Expr.forallE _ d b _ => visitPost (e.updateForallE! (← visit d) (← visit b))
-        | Expr.lam _ d b _     => visitPost (e.updateLambdaE! (← visit d) (← visit b))
-        | Expr.letE _ t v b _  => visitPost (e.updateLet! (← visit t) (← visit v) (← visit b))
-        | Expr.app ..          => e.withApp fun f args => do visitPost (mkAppN (← visit f) (← args.mapM visit))
-        | Expr.mdata _ b       => visitPost (e.updateMData! (← visit b))
-        | Expr.proj _ _ b      => visitPost (e.updateProj! (← visit b))
-        | _                    => visitPost e
+        | .forallE _ d b _ => visitPost (e.updateForallE! (← visit d) (← visit b))
+        | .lam _ d b _     => visitPost (e.updateLambdaE! (← visit d) (← visit b))
+        | .letE _ t v b _  => visitPost (e.updateLet! (← visit t) (← visit v) (← visit b))
+        | .app ..          => e.withApp fun f args => do visitPost (mkAppN (← visit f) (← args.mapM visit))
+        | .mdata _ b       => visitPost (e.updateMData! (← visit b))
+        | .proj _ _ b      => visitPost (e.updateProj! (← visit b))
+        | _                => visitPost e
   visit input |>.run
 
 def betaReduce (e : Expr) : CoreM Expr :=
@@ -73,12 +75,18 @@ namespace Meta
 
 /--
   Similar to `Core.transform`, but terms provided to `pre` and `post` do not contain loose bound variables.
-  So, it is safe to use any `MetaM` method at `pre` and `post`. -/
-partial def transform {m} [Monad m] [MonadLiftT MetaM m] [MonadControlT MetaM m] [MonadTrace m] [MonadRef m] [MonadOptions m] [AddMessageContext m]
+  So, it is safe to use any `MetaM` method at `pre` and `post`.
+
+  If `skipConstInApp := true`, then for an expression `mkAppN (.const f) args`, the subexpression
+  `.const f` is not visited again. Put differently: every `.const f` is visited once, with its
+  arguments if present, on its own otherwise.
+ -/
+partial def transform {m} [Monad m] [MonadLiftT MetaM m] [MonadControlT MetaM m]
     (input : Expr)
     (pre   : Expr → m TransformStep := fun _ => return .continue)
     (post  : Expr → m TransformStep := fun e => return .done e)
     (usedLetOnly := false)
+    (skipConstInApp := false)
     : m Expr := do
   let _ : STWorld IO.RealWorld m := ⟨⟩
   let _ : MonadLiftT (ST IO.RealWorld) m := { monadLift := fun x => liftM (m := MetaM) (liftM (m := ST IO.RealWorld) x) }
@@ -91,53 +99,66 @@ partial def transform {m} [Monad m] [MonadLiftT MetaM m] [MonadControlT MetaM m]
         | .continue e? => pure (e?.getD e)
       let rec visitLambda (fvars : Array Expr) (e : Expr) : MonadCacheT ExprStructEq Expr m Expr := do
         match e with
-        | Expr.lam n d b c =>
+        | .lam n d b c =>
           withLocalDecl n c (← visit (d.instantiateRev fvars)) fun x =>
             visitLambda (fvars.push x) b
         | e => visitPost (← mkLambdaFVars (usedLetOnly := usedLetOnly) fvars (← visit (e.instantiateRev fvars)))
       let rec visitForall (fvars : Array Expr) (e : Expr) : MonadCacheT ExprStructEq Expr m Expr := do
         match e with
-        | Expr.forallE n d b c =>
+        | .forallE n d b c =>
           withLocalDecl n c (← visit (d.instantiateRev fvars)) fun x =>
             visitForall (fvars.push x) b
         | e => visitPost (← mkForallFVars (usedLetOnly := usedLetOnly) fvars (← visit (e.instantiateRev fvars)))
       let rec visitLet (fvars : Array Expr) (e : Expr) : MonadCacheT ExprStructEq Expr m Expr := do
         match e with
-        | Expr.letE n t v b _ =>
+        | .letE n t v b _ =>
           withLetDecl n (← visit (t.instantiateRev fvars)) (← visit (v.instantiateRev fvars)) fun x =>
             visitLet (fvars.push x) b
         | e => visitPost (← mkLetFVars (usedLetOnly := usedLetOnly) fvars (← visit (e.instantiateRev fvars)))
       let visitApp (e : Expr) : MonadCacheT ExprStructEq Expr m Expr :=
         e.withApp fun f args => do
-          visitPost (mkAppN (← visit f) (← args.mapM visit))
+          if skipConstInApp && f.isConst then
+            visitPost (mkAppN f (← args.mapM visit))
+          else
+            visitPost (mkAppN (← visit f) (← args.mapM visit))
       match (← pre e) with
       | .done e  => pure e
       | .visit e => visit e
       | .continue e? =>
         let e := e?.getD e
         match e with
-        | Expr.forallE ..    => visitForall #[] e
-        | Expr.lam ..        => visitLambda #[] e
-        | Expr.letE ..       => visitLet #[] e
-        | Expr.app ..        => visitApp e
-        | Expr.mdata _ b     => visitPost (e.updateMData! (← visit b))
-        | Expr.proj _ _ b    => visitPost (e.updateProj! (← visit b))
-        | _                  => visitPost e
+        | .forallE ..    => visitForall #[] e
+        | .lam ..        => visitLambda #[] e
+        | .letE ..       => visitLet #[] e
+        | .app ..        => visitApp e
+        | .mdata _ b     => visitPost (e.updateMData! (← visit b))
+        | .proj _ _ b    => visitPost (e.updateProj! (← visit b))
+        | _              => visitPost e
   visit input |>.run
 
+-- TODO: add options to distinguish zeta and zetaDelta reduction
 def zetaReduce (e : Expr) : MetaM Expr := do
   let pre (e : Expr) : MetaM TransformStep := do
-    match e with
-    | Expr.fvar fvarId =>
-      match (← getLCtx).find? fvarId with
-      | none => return TransformStep.done e
-      | some localDecl =>
-        if let some value := localDecl.value? then
-          return TransformStep.visit value
-        else
-          return TransformStep.done e
-    | _ => return .continue
+    let .fvar fvarId := e | return .continue
+    let some localDecl := (← getLCtx).find? fvarId | return .done e
+    let some value := localDecl.value? | return .done e
+    return .visit (← instantiateMVars value)
   transform e (pre := pre) (usedLetOnly := true)
+
+/--
+Zeta reduces only the provided fvars, beta reducing the substitutions.
+-/
+def zetaDeltaFVars (e : Expr) (fvars : Array FVarId) : MetaM Expr :=
+  let unfold? (fvarId : FVarId) : MetaM (Option Expr) := do
+    if fvars.contains fvarId then
+      fvarId.getValue?
+    else
+      return none
+  let pre (e : Expr) : MetaM TransformStep := do
+    let .fvar fvarId := e.getAppFn | return .continue
+    let some val ← unfold? fvarId | return .continue
+    return .visit <| (← instantiateMVars val).beta e.getAppArgs
+  transform e (pre := pre)
 
 /-- Unfold definitions and theorems in `e` that are not in the current environment, but are in `biggerEnv`. -/
 def unfoldDeclsFrom (biggerEnv : Environment) (e : Expr) : CoreM Expr := do
@@ -145,25 +166,20 @@ def unfoldDeclsFrom (biggerEnv : Environment) (e : Expr) : CoreM Expr := do
     let env ← getEnv
     setEnv biggerEnv -- `e` has declarations from `biggerEnv` that are not in `env`
     let pre (e : Expr) : CoreM TransformStep := do
-      match e with
-      | Expr.const declName us .. =>
-        if env.contains declName then
-          return TransformStep.done e
-        else if let some info := biggerEnv.find? declName then
-          if info.hasValue then
-            return TransformStep.visit (← instantiateValueLevelParams info us)
-          else
-            return TransformStep.done e
-        else
-          return TransformStep.done e
-      | _ => return .continue
+      let .const declName us := e | return .continue
+      if env.contains declName then
+        return .done e
+      let some info := biggerEnv.find? declName | return .done e
+      if info.hasValue then
+        return .visit (← instantiateValueLevelParams info us)
+      else
+        return .done e
     Core.transform e (pre := pre)
 
 def eraseInaccessibleAnnotations (e : Expr) : CoreM Expr :=
-  Core.transform e (post := fun e => return TransformStep.done <| if let some e := inaccessible? e then e else e)
+  Core.transform e (post := fun e => return .done <| if let some e := inaccessible? e then e else e)
 
 def erasePatternRefAnnotations (e : Expr) : CoreM Expr :=
-  Core.transform e (post := fun e => return TransformStep.done <| if let some (_, e) := patternWithRef? e then e else e)
+  Core.transform e (post := fun e => return .done <| if let some (_, e) := patternWithRef? e then e else e)
 
-end Meta
-end Lean
+end Lean.Meta

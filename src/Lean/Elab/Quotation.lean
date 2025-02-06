@@ -5,6 +5,7 @@ Authors: Sebastian Ullrich
 
 Elaboration of syntax quotations as terms and patterns (in `match_syntax`). See also `./Hygiene.lean` for the basic
 hygiene workings and data types. -/
+prelude
 import Lean.Syntax
 import Lean.ResolveName
 import Lean.Elab.Term
@@ -57,7 +58,7 @@ partial def mkTuple : Array Syntax → TermElabM Syntax
   | #[]  => `(Unit.unit)
   | #[e] => return e
   | es   => do
-    let stx ← mkTuple (es.eraseIdx 0)
+    let stx ← mkTuple (es.eraseIdxIfInBounds 0)
     `(Prod.mk $(es[0]!) $stx)
 
 def resolveSectionVariable (sectionVars : NameMap Name) (id : Name) : List (Name × List String) :=
@@ -189,7 +190,7 @@ private partial def quoteSyntax : Syntax → TermElabM Term
                 | $[some $ids:ident],* => $(quote inner)
                 | $[_%$ids],*          => Array.empty)
             | _ =>
-              let arr ← ids[:ids.size-1].foldrM (fun id arr => `(Array.zip $id:ident $arr)) ids.back
+              let arr ← ids[:ids.size-1].foldrM (fun id arr => `(Array.zip $id:ident $arr)) ids.back!
               `(Array.map (fun $(← mkTuple ids) => $(inner[0]!)) $arr)
           let arr ← if k == `sepBy then
             `(mkSepArray $arr $(getSepStxFromSplice arg))
@@ -222,9 +223,12 @@ def getQuotKind (stx : Syntax) : TermElabM SyntaxNodeKind := do
   | ``Parser.Tactic.quot => addNamedQuotInfo stx `tactic
   | ``Parser.Tactic.quotSeq => addNamedQuotInfo stx `tactic.seq
   | .str kind "quot" => addNamedQuotInfo stx kind
-  | ``dynamicQuot => match ← elabParserName stx[1] with
+  | ``dynamicQuot =>
+    let id := stx[1]
+    match (← elabParserName id) with
     | .parser n _ => return n
     | .category c => return c
+    | .alias _    => return (← Parser.getSyntaxKindOfParserAlias? id.getId.eraseMacroScopes).get!
   | k => throwError "unexpected quotation kind {k}"
 
 def mkSyntaxQuotation (stx : Syntax) (kind : Name) : TermElabM Syntax := do
@@ -430,7 +434,7 @@ private partial def getHeadInfo (alt : Alt) : TermElabM HeadInfo :=
             else mkNullNode contents
           -- We use `no_error_if_unused%` in auxiliary `match`-syntax to avoid spurious error messages,
           -- the outer `match` is checking for unused alternatives
-          `(match ($(discrs).sequenceMap fun
+          `(match ($(discrs).mapM fun
                 | `($contents) => no_error_if_unused% some $tuple
                 | _            => no_error_if_unused% none) with
               | some $resId => $yes
@@ -592,7 +596,7 @@ private partial def compileStxMatch (discrs : List Term) (alts : List Alt) : Ter
     `(have __discr := $discr; $stx)
   | _, _ => unreachable!
 
-abbrev IdxSet := HashSet Nat
+abbrev IdxSet := Std.HashSet Nat
 
 private partial def hasNoErrorIfUnused : Syntax → Bool
   | `(no_error_if_unused% $_) => true
@@ -601,7 +605,7 @@ private partial def hasNoErrorIfUnused : Syntax → Bool
 
 /--
 Given `rhss` the right-hand-sides of a `match`-syntax notation,
-We tag them with with fresh identifiers `alt_idx`. We use them to detect whether an alternative
+We tag them with fresh identifiers `alt_idx`. We use them to detect whether an alternative
 has been used or not.
 The result is a triple `(altIdxMap, ignoreIfUnused, rhssNew)` where
 - `altIdxMap` is a mapping from the `alt_idx` identifiers to right-hand-side indices.
@@ -651,9 +655,9 @@ The parameter `alts` provides position information for alternatives.
 -/
 private def checkUnusedAlts (stx : Syntax) (alts : Array Syntax) (altIdxMap : NameMap Nat) (ignoreIfUnused : IdxSet) : TermElabM Syntax := do
   let (stx, used) ← findUsedAlts stx altIdxMap
-  for i in [:alts.size] do
+  for h : i in [:alts.size] do
     unless used.contains i || ignoreIfUnused.contains i do
-      logErrorAt alts[i]! s!"redundant alternative #{i+1}"
+      logErrorAt alts[i] s!"redundant alternative #{i+1}"
   return stx
 
 def match_syntax.expand (stx : Syntax) : TermElabM Syntax := do
@@ -686,5 +690,6 @@ builtin_initialize
   registerTraceClass `Elab.match_syntax
   registerTraceClass `Elab.match_syntax.alt (inherited := true)
   registerTraceClass `Elab.match_syntax.result (inherited := true)
+  registerTraceClass `Elab.match_syntax.onMatch
 
 end Lean.Elab.Term.Quotation

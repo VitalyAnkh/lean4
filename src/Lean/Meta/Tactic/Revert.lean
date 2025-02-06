@@ -3,6 +3,7 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Meta.Tactic.Clear
 
 namespace Lean.Meta
@@ -32,7 +33,7 @@ def _root_.Lean.MVarId.revert (mvarId : MVarId) (fvarIds : Array FVarId) (preser
         toRevertNew := toRevertNew.push x
     let tag ← mvarId.getTag
     -- TODO: the following code can be optimized because `MetavarContext.revert` will compute `collectDeps` again.
-    -- We should factor out the relevat part
+    -- We should factor out the relevant part
 
     -- Set metavariable kind to natural to make sure `revert` will assign it.
     mvarId.setKind .natural
@@ -42,6 +43,7 @@ def _root_.Lean.MVarId.revert (mvarId : MVarId) (fvarIds : Array FVarId) (preser
       finally
         mvarId.setKind .syntheticOpaque
     let mvar := e.getAppFn
+    mvar.mvarId!.setKind .syntheticOpaque
     mvar.mvarId!.setTag tag
     return (toRevert.map Expr.fvarId!, mvar.mvarId!)
 
@@ -51,9 +53,5 @@ def _root_.Lean.MVarId.revertAfter (mvarId : MVarId) (fvarId : FVarId) : MetaM (
     let localDecl ← fvarId.getDecl
     let fvarIds := (← getLCtx).foldl (init := #[]) (start := localDecl.index+1) fun fvarIds decl => fvarIds.push decl.fvarId
     mvarId.revert fvarIds (preserveOrder := true) (clearAuxDeclsInsteadOfRevert := true)
-
-@[deprecated MVarId.revert]
-def revert (mvarId : MVarId) (fvarIds : Array FVarId) (preserveOrder : Bool := false) : MetaM (Array FVarId × MVarId) := do
-  mvarId.revert fvarIds preserveOrder
 
 end Lean.Meta

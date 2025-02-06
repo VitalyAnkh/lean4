@@ -3,6 +3,7 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Compiler.IR.Format
 import Lean.Compiler.IR.Basic
 import Lean.Compiler.IR.CompilerM
@@ -62,7 +63,7 @@ partial def merge (v₁ v₂ : Value) : Value :=
   | top, _ => top
   | _, top => top
   | v₁@(ctor i₁ vs₁), v₂@(ctor i₂ vs₂) =>
-    if i₁ == i₂ then ctor i₁ <| vs₁.size.fold (init := #[]) fun i r => r.push (merge vs₁[i]! vs₂[i]!)
+    if i₁ == i₂ then ctor i₁ <| vs₁.size.fold (init := #[]) fun i _ r => r.push (merge vs₁[i] vs₂[i]!)
     else choice [v₁, v₂]
   | choice vs₁, choice vs₂ => choice <| vs₁.foldl (addChoice merge) vs₂
   | choice vs, v => choice <| addChoice merge vs v
@@ -151,7 +152,7 @@ def getFunctionSummary? (env : Environment) (fid : FunId) : Option Value :=
   | some modIdx => findAtSorted? (functionSummariesExt.getModuleEntries env modIdx) fid
   | none        => functionSummariesExt.getState env |>.find? fid
 
-abbrev Assignment := HashMap VarId Value
+abbrev Assignment := Std.HashMap VarId Value
 
 structure InterpContext where
   currFnIdx : Nat := 0
@@ -171,7 +172,7 @@ def findVarValue (x : VarId) : M Value := do
   let ctx ← read
   let s ← get
   let assignment := s.assignments[ctx.currFnIdx]!
-  return assignment.findD x bot
+  return assignment.getD x bot
 
 def findArgValue (arg : Arg) : M Value :=
   match arg with
@@ -224,8 +225,8 @@ def updateCurrFnSummary (v : Value) : M Unit := do
 def updateJPParamsAssignment (ys : Array Param) (xs : Array Arg) : M Bool := do
   let ctx ← read
   let currFnIdx := ctx.currFnIdx
-  ys.size.foldM (init := false) fun i r => do
-    let y := ys[i]!
+  ys.size.foldM (init := false) fun i _ r => do
+    let y := ys[i]
     let x := xs[i]!
     let yVal ← findVarValue y.x
     let xVal ← findArgValue x
@@ -281,8 +282,8 @@ partial def interpFnBody : FnBody → M Unit
 def inferStep : M Bool := do
   let ctx ← read
   modify fun s => { s with assignments := ctx.decls.map fun _ => {} }
-  ctx.decls.size.foldM (init := false) fun idx modified => do
-    match ctx.decls[idx]! with
+  ctx.decls.size.foldM (init := false) fun idx _ modified => do
+    match ctx.decls[idx] with
     | .fdecl (xs := ys) (body := b) .. => do
       let s ← get
       let currVals := s.funVals[idx]!
@@ -302,7 +303,7 @@ partial def elimDeadAux (assignment : Assignment) : FnBody → FnBody
   | FnBody.vdecl x t e b  => FnBody.vdecl x t e (elimDeadAux assignment b)
   | FnBody.jdecl j ys v b => FnBody.jdecl j ys (elimDeadAux assignment v) (elimDeadAux assignment b)
   | FnBody.case tid x xType alts =>
-    let v := assignment.findD x bot
+    let v := assignment.getD x bot
     let alts := alts.map fun alt =>
       match alt with
       | Alt.ctor i b  => Alt.ctor i <| if containsCtor v i then elimDeadAux assignment b else FnBody.unreachable
@@ -335,8 +336,8 @@ def elimDeadBranches (decls : Array Decl) : CompilerM (Array Decl) := do
   let funVals := s.funVals
   let assignments := s.assignments
   modify fun s =>
-    let env := decls.size.fold (init := s.env) fun i env =>
-      addFunctionSummary env decls[i]!.name funVals[i]!
+    let env := decls.size.fold (init := s.env) fun i _ env =>
+      addFunctionSummary env decls[i].name funVals[i]!
     { s with env := env }
   return decls.mapIdx fun i decl => elimDead assignments[i]! decl
 
