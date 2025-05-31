@@ -184,6 +184,21 @@ def IterStep.mapIterator {α' : Type u'} (f : α → α') : IterStep α β → I
   | .done => .done
 
 @[simp]
+theorem IterStep.mapIterator_yield {α' : Type u'} {f : α → α'} {it : α} {out : β} :
+    (IterStep.yield it out).mapIterator f = IterStep.yield (f it) out :=
+  rfl
+
+@[simp]
+theorem IterStep.mapIterator_skip {α' : Type u'} {f : α → α'} {it : α} :
+    (IterStep.skip it (β := β)).mapIterator f = IterStep.skip (f it) :=
+  rfl
+
+@[simp]
+theorem IterStep.mapIterator_done {α' : Type u'} {f : α → α'} :
+    (IterStep.done (α := α) (β := β)).mapIterator f = IterStep.done :=
+  rfl
+
+@[simp]
 theorem IterStep.mapIterator_mapIterator {α' : Type u'} {α'' : Type u''}
     {f : α → α'} {g : α' → α''} {step : IterStep α β} :
     (step.mapIterator f).mapIterator g = step.mapIterator (g ∘ f) := by
@@ -206,7 +221,7 @@ def PlausibleIterStep (IsPlausibleStep : IterStep α β → Prop) := Subtype IsP
 /--
 Match pattern for the `yield` case. See also `IterStep.yield`.
 -/
-@[match_pattern]
+@[match_pattern, simp]
 def PlausibleIterStep.yield {IsPlausibleStep : IterStep α β → Prop}
     (it' : α) (out : β) (h : IsPlausibleStep (.yield it' out)) :
     PlausibleIterStep IsPlausibleStep :=
@@ -215,7 +230,7 @@ def PlausibleIterStep.yield {IsPlausibleStep : IterStep α β → Prop}
 /--
 Match pattern for the `skip` case. See also `IterStep.skip`.
 -/
-@[match_pattern]
+@[match_pattern, simp]
 def PlausibleIterStep.skip {IsPlausibleStep : IterStep α β → Prop}
     (it' : α) (h : IsPlausibleStep (.skip it')) : PlausibleIterStep IsPlausibleStep :=
   ⟨.skip it', h⟩
@@ -223,7 +238,7 @@ def PlausibleIterStep.skip {IsPlausibleStep : IterStep α β → Prop}
 /--
 Match pattern for the `done` case. See also `IterStep.done`.
 -/
-@[match_pattern]
+@[match_pattern, simp]
 def PlausibleIterStep.done {IsPlausibleStep : IterStep α β → Prop}
     (h : IsPlausibleStep .done) : PlausibleIterStep IsPlausibleStep :=
   ⟨.done, h⟩
