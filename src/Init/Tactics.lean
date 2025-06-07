@@ -140,9 +140,46 @@ references to a hypothesis.
 syntax (name := clear) "clear" (ppSpace colGt term:max)+ : tactic
 
 /--
-`subst x...` substitutes each `x` with `e` in the goal if there is a hypothesis
-of type `x = e` or `e = x`.
-If `x` is itself a hypothesis of type `y = e` or `e = y`, `y` is substituted instead.
+Syntax for trying to clear the values of all local definitions.
+-/
+syntax clearValueStar := "*"
+/--
+Syntax for creating a hypothesis before clearing values.
+In `(hx : x = _)`, the value of `x` is unified with `_`.
+-/
+syntax clearValueHyp := "(" binderIdent " : " term:51 " = " term:51 ")"
+/--
+Argument for the `clear_value` tactic.
+-/
+syntax clearValueArg := clearValueStar <|> clearValueHyp <|> term:max
+/--
+* `clear_value x...` clears the values of the given local definitions.
+  A local definition `x : α := v` becomes a hypothesis `x : α`.
+
+* `clear_value (h : x = _)` adds a hypothesis `h : x = v` before clearing the value of `x`.
+  This is short for `have h : x = v := rfl; clear_value x`.
+  Any value definitionally equal to `v` can be used in place of `_`.
+
+* `clear_value *` clears values of all hypotheses that can be cleared.
+  Fails if none can be cleared.
+
+These syntaxes can be combined. For example, `clear_value x y *` ensures that `x` and `y` are cleared
+while trying to clear all other local definitions,
+and `clear_value (hx : x = _) y * with hx` does the same while first adding the `hx : x = v` hypothesis.
+-/
+syntax (name := clearValue) "clear_value" (ppSpace colGt clearValueArg)+ : tactic
+
+/--
+`subst x...` substitutes each hypothesis `x` with a definition found in the local context,
+then eliminates the hypothesis.
+- If `x` is a local definition, then its definition is used.
+- Otherwise, if there is a hypothesis of the form `x = e` or `e = x`,
+  then `e` is used for the definition of `x`.
+
+If `h : a = b`, then `subst h` may be used if either `a` or `b` unfolds to a local hypothesis.
+This is similar to the `cases h` tactic.
+
+See also: `subst_vars` for substituting all local hypotheses that have a defining equation.
 -/
 syntax (name := subst) "subst" (ppSpace colGt term:max)+ : tactic
 
@@ -1880,30 +1917,35 @@ syntax "‹" withoutPosition(term) "›" : term
 macro_rules | `(‹$type›) => `((by assumption : $type))
 
 /--
-`get_elem_tactic_trivial` is an extensible tactic automatically called
+`get_elem_tactic_extensible` is an extensible tactic automatically called
 by the notation `arr[i]` to prove any side conditions that arise when
 constructing the term (e.g. the index is in bounds of the array).
-The default behavior is to just try `trivial` (which handles the case
-where `i < arr.size` is in the context) and `simp +arith` and `omega`
+The default behavior is to try `simp +arith` and `omega`
 (for doing linear arithmetic in the index).
+
+(Note that the core tactic `get_elem_tactic` has already tried
+`done` and `assumption` before the extensible tactic is called.)
 -/
+syntax "get_elem_tactic_extensible" : tactic
+
+/-- `get_elem_tactic_trivial` has been deprecated in favour of `get_elem_tactic_extensible`. -/
 syntax "get_elem_tactic_trivial" : tactic
 
-macro_rules | `(tactic| get_elem_tactic_trivial) => `(tactic| omega)
-macro_rules | `(tactic| get_elem_tactic_trivial) => `(tactic| simp +arith; done)
-macro_rules | `(tactic| get_elem_tactic_trivial) => `(tactic| trivial)
+macro_rules | `(tactic| get_elem_tactic_extensible) => `(tactic| omega)
+macro_rules | `(tactic| get_elem_tactic_extensible) => `(tactic| simp +arith; done)
+macro_rules | `(tactic| get_elem_tactic_extensible) => `(tactic| trivial)
 
 /--
 `get_elem_tactic` is the tactic automatically called by the notation `arr[i]`
 to prove any side conditions that arise when constructing the term
 (e.g. the index is in bounds of the array). It just delegates to
-`get_elem_tactic_trivial` and gives a diagnostic error message otherwise;
-users are encouraged to extend `get_elem_tactic_trivial` instead of this tactic.
+`get_elem_tactic_extensible` and gives a diagnostic error message otherwise;
+users are encouraged to extend `get_elem_tactic_extensible` instead of this tactic.
 -/
 macro "get_elem_tactic" : tactic =>
   `(tactic| first
       /-
-      Recall that `macro_rules` (namely, for `get_elem_tactic_trivial`) are tried in reverse order.
+      Recall that `macro_rules` (namely, for `get_elem_tactic_extensible`) are tried in reverse order.
       We first, however, try `done`, since the necessary proof may already have been
       found during unification, in which case there is no goal to solve (see #6999).
       If a goal is present, we want `assumption` to be tried first.
@@ -1916,15 +1958,15 @@ macro "get_elem_tactic" : tactic =>
       If `omega` is used to "fill" this proof, we will have a more complex proof term that
       cannot be inferred by unification.
       We hardcoded `assumption` here to ensure users cannot accidentally break this IF
-      they add new `macro_rules` for `get_elem_tactic_trivial`.
+      they add new `macro_rules` for `get_elem_tactic_extensible`.
 
       TODO: Implement priorities for `macro_rules`.
-      TODO: Ensure we have **high-priority** macro_rules for `get_elem_tactic_trivial` which are
+      TODO: Ensure we have **high-priority** macro_rules for `get_elem_tactic_extensible` which are
             just `done` and `assumption`.
       -/
     | done
     | assumption
-    | get_elem_tactic_trivial
+    | get_elem_tactic_extensible
     | fail "failed to prove index is valid, possible solutions:
   - Use `have`-expressions to prove the index is valid
   - Use `a[i]!` notation instead, runtime check is performed, and 'Panic' error message is produced if index is not valid
