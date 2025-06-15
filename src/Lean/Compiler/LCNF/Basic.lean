@@ -40,7 +40,9 @@ inductive LitValue where
   | uint16 (val : UInt16)
   | uint32 (val : UInt32)
   | uint64 (val : UInt64)
-  -- TODO: add constructors for `Int`, `Float`, `USize` ...
+  -- USize has a maximum size of 64 bits
+  | usize (val : UInt64)
+  -- TODO: add constructors for `Int`, `Float`, ...
   deriving Inhabited, BEq, Hashable
 
 def LitValue.toExpr : LitValue → Expr
@@ -50,6 +52,7 @@ def LitValue.toExpr : LitValue → Expr
   | .uint16 v => .app (.const ``UInt16.ofNat []) (.lit (.natVal (UInt16.toNat v)))
   | .uint32 v => .app (.const ``UInt32.ofNat []) (.lit (.natVal (UInt32.toNat v)))
   | .uint64 v => .app (.const ``UInt64.ofNat []) (.lit (.natVal (UInt64.toNat v)))
+  | .usize v => .app (.const ``USize.ofNat []) (.lit (.natVal (UInt64.toNat v)))
 
 inductive Arg where
   | erased
@@ -656,7 +659,7 @@ def Decl.isTemplateLike (decl : Decl) : CoreM Bool := do
   else
     return false
 
-private partial def collectType (e : Expr) : FVarIdSet → FVarIdSet :=
+private partial def collectType (e : Expr) : FVarIdHashSet → FVarIdHashSet :=
   match e with
   | .forallE _ d b _ => collectType b ∘ collectType d
   | .lam _ d b _     => collectType b ∘ collectType d
@@ -666,30 +669,30 @@ private partial def collectType (e : Expr) : FVarIdSet → FVarIdSet :=
   | .proj .. | .letE .. => unreachable!
   | _                => id
 
-private def collectArg (arg : Arg) (s : FVarIdSet) : FVarIdSet :=
+private def collectArg (arg : Arg) (s : FVarIdHashSet) : FVarIdHashSet :=
   match arg with
   | .erased => s
   | .fvar fvarId => s.insert fvarId
   | .type e => collectType e s
 
-private def collectArgs (args : Array Arg) (s : FVarIdSet) : FVarIdSet :=
+private def collectArgs (args : Array Arg) (s : FVarIdHashSet) : FVarIdHashSet :=
   args.foldl (init := s) fun s arg => collectArg arg s
 
-private def collectLetValue (e : LetValue) (s : FVarIdSet) : FVarIdSet :=
+private def collectLetValue (e : LetValue) (s : FVarIdHashSet) : FVarIdHashSet :=
   match e with
   | .fvar fvarId args => collectArgs args <| s.insert fvarId
   | .const _ _ args => collectArgs args s
   | .proj _ _ fvarId => s.insert fvarId
   | .lit .. | .erased => s
 
-private partial def collectParams (ps : Array Param) (s : FVarIdSet) : FVarIdSet :=
+private partial def collectParams (ps : Array Param) (s : FVarIdHashSet) : FVarIdHashSet :=
   ps.foldl (init := s) fun s p => collectType p.type s
 
 mutual
-partial def FunDecl.collectUsed (decl : FunDecl) (s : FVarIdSet := {}) : FVarIdSet :=
+partial def FunDecl.collectUsed (decl : FunDecl) (s : FVarIdHashSet := {}) : FVarIdHashSet :=
   decl.value.collectUsed <| collectParams decl.params <| collectType decl.type s
 
-partial def Code.collectUsed (code : Code) (s : FVarIdSet := {}) : FVarIdSet :=
+partial def Code.collectUsed (code : Code) (s : FVarIdHashSet := {}) : FVarIdHashSet :=
   match code with
   | .let decl k => k.collectUsed <| collectLetValue decl.value <| collectType decl.type s
   | .jp decl k | .fun decl k => k.collectUsed <| decl.collectUsed s
@@ -705,7 +708,7 @@ partial def Code.collectUsed (code : Code) (s : FVarIdSet := {}) : FVarIdSet :=
   | .jmp fvarId args => collectArgs args <| s.insert fvarId
 end
 
-abbrev collectUsedAtExpr (s : FVarIdSet) (e : Expr) : FVarIdSet :=
+abbrev collectUsedAtExpr (s : FVarIdHashSet) (e : Expr) : FVarIdHashSet :=
   collectType e s
 
 /--
